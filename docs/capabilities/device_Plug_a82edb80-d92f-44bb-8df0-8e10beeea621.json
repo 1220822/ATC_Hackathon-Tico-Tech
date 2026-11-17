@@ -1,0 +1,81 @@
+{
+  "isError": false,
+  "data": {
+    "name": "Plug",
+    "id": "a82edb80-d92f-44bb-8df0-8e10beeea621",
+    "type": "plug",
+    "capabilities": [
+      {
+        "name": "",
+        "type": "instantPower",
+        "value": 7,
+        "min": 0,
+        "max": 50000
+      },
+      {
+        "name": "",
+        "type": "instantVoltage",
+        "value": 229,
+        "min": 0,
+        "max": 50000
+      },
+      {
+        "name": "",
+        "type": "multiPower",
+        "value": [
+          {
+            "id": "1",
+            "name": "switch_1",
+            "order": 1,
+            "partnerType": "switch_1",
+            "type": "multiplugSwitch",
+            "value": "on"
+          }
+        ]
+      },
+      {
+        "name": "",
+        "type": "power",
+        "availableValues": [
+          "on",
+          "off"
+        ],
+        "value": "on"
+      },
+      {
+        "name": "",
+        "type": "additionalEnergyConsumption",
+        "value": 0,
+        "min": 0,
+        "max": 50000
+      },
+      {
+        "name": "",
+        "type": "instantCurrent",
+        "value": 57,
+        "min": 0,
+        "max": 30000
+      },
+      {
+        "name": "",
+        "type": "todayConsumption",
+        "value": 0,
+        "min": 0,
+        "max": 50000
+      },
+      {
+        "name": "",
+        "type": "yesterdayConsumption",
+        "value": 0,
+        "min": 0,
+        "max": 50000
+      }
+    ],
+    "categories": [
+      "energy"
+    ],
+    "roomName": "Hack 7",
+    "lastCommunicationTime": 1794933400290,
+    "pairedTime": 1794929273370
+  }
+}

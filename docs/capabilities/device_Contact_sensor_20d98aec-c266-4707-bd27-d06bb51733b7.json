@@ -1,0 +1,44 @@
+{
+  "isError": false,
+  "data": {
+    "name": "Contact sensor",
+    "id": "20d98aec-c266-4707-bd27-d06bb51733b7",
+    "type": "contactSensor",
+    "capabilities": [
+      {
+        "name": "",
+        "type": "tamperState",
+        "availableValues": [
+          "normal",
+          "alarm"
+        ],
+        "value": "normal"
+      },
+      {
+        "name": "",
+        "type": "sensorState",
+        "availableValues": [
+          "normal",
+          "alarm"
+        ],
+        "value": "alarm"
+      },
+      {
+        "name": "",
+        "type": "batteryStatus",
+        "availableValues": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "value": "high"
+      }
+    ],
+    "categories": [
+      "security"
+    ],
+    "roomName": "Hack 7",
+    "lastCommunicationTime": 1794933541701,
+    "pairedTime": 1793805805839
+  }
+}

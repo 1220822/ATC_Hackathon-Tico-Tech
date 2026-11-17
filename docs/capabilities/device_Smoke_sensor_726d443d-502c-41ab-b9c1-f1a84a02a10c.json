@@ -1,0 +1,26 @@
+{
+  "isError": false,
+  "data": {
+    "name": "Smoke sensor",
+    "id": "726d443d-502c-41ab-b9c1-f1a84a02a10c",
+    "type": "smokeSensor",
+    "capabilities": [
+      {
+        "name": "",
+        "type": "batteryStatus",
+        "availableValues": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "value": "high"
+      }
+    ],
+    "categories": [
+      "security"
+    ],
+    "roomName": "Hack 7",
+    "lastCommunicationTime": 1794924961581,
+    "pairedTime": 1793805841148
+  }
+}

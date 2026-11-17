@@ -1,0 +1,34 @@
+{
+  "isError": false,
+  "data": {
+    "name": "Temperature sensor",
+    "id": "54e1ea8e-9ca3-4933-a4dc-a1eb37e6990c",
+    "type": "temperatureSensor",
+    "capabilities": [
+      {
+        "name": "",
+        "type": "temperatureValue",
+        "value": 21.6,
+        "min": -50,
+        "max": 60
+      },
+      {
+        "name": "",
+        "type": "humidityValue",
+        "value": 69.9,
+        "min": 0,
+        "max": 100
+      },
+      {
+        "name": "",
+        "type": "batteryLevel",
+        "value": 100,
+        "min": 0,
+        "max": 100
+      }
+    ],
+    "roomName": "Hack 7",
+    "lastCommunicationTime": 1794932735237,
+    "pairedTime": 1793979089658
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "isError": false,
+  "data": {
+    "history": [
+      {
+        "alarmEventDetail": {
+          "device": {
+            "id": "",
+            "name": "",
+            "roomId": "",
+            "roomName": "",
+            "type": ""
+          },
+          "timestamp": 0,
+          "type": ""
+        },
+        "alarmId": "",
+        "eventTimestamp": 1794929948575,
+        "eventType": "CANCEL",
+        "intrusionId": "",
+        "isPre": false,
+        "securitySettings": null
+      },
+      {
+        "alarmEventDetail": {
+          "device": {
+            "id": "",
+            "name": "",
+            "roomId": "",
+            "roomName": "",
+            "type": ""
+          },
+          "timestamp": 1794929890819,
+          "type": "EMERGENCY"
+        },
+        "alarmId": "aecff1af-799a-436e-9186-0222752b5ead",
+        "eventTimestamp": 1794929890826,
+        "eventType": "ALARM",
+        "intrusionId": "aecff1af-799a-436e-9186-0222752b5ead",
+        "isPre": false,
+        "securitySettings": null
+      }
+    ]
+  }
+}
