@@ -113,6 +113,18 @@ class TestDiff(SimTestCase):
         self.assertEqual(b.cap("light", "color_rgb"), "255,140,0")
         self.assertEqual(types(diff(a, b, self.s)), ["light_changed"])
 
+    def test_sim_light_colour_scaled_by_brightness(self):
+        # Mirrors the real Light (2026-11-17): 255,140,0 at brightness 40 reads back 102,56,0.
+        light = self.snap().by_role("light")
+        self.home.apply_capability(light.id, {"type": "brightness", "value": 40})
+        self.home.apply_capability(light.id, {"type": "color_rgb", "redValue": 255,
+                                              "greenValue": 140, "blueValue": 0})
+        s = self.snap()
+        self.assertEqual(s.cap("light", "color_rgb"), "102,56,0")
+        self.assertEqual(s.light_hue_rgb, (255, 140, 0))
+        self.home.apply_capability(light.id, {"type": "brightness", "value": 100})
+        self.assertEqual(self.snap().cap("light", "color_rgb"), "255,140,0")
+
 
 class TestTrend(SimTestCase):
     def test_drop_emits_once(self):

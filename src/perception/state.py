@@ -9,6 +9,8 @@ Device semantics confirmed against the "Hack 7" account (docs/capabilities/):
     gateway.alarmState / tamperState: "normal" | "alarm"
     plug: power on|off, instantPower (W), todayConsumption
     bulb: power, brightness 1-100, temperature 0-100 (white tone), color_rgb "r,g,b", workMode
+          The reported color_rgb is the requested colour scaled by brightness/100 (HSV value):
+          set 255,140,0 at brightness 40 -> reads 102,56,0. Use light_hue_rgb to compare colours.
     smokeSensor: only batteryStatus -> smoke is read from the alarm history (see classify_alarm)
 """
 
@@ -104,6 +106,11 @@ class HomeState(BaseModel):
     def plug_power_w(self) -> float | None:
         return _num(self.cap("plug", "instantPower"))
 
+    @property
+    def light_hue_rgb(self) -> tuple[int, int, int] | None:
+        """Reported light colour normalised to full brightness (max channel = 255)."""
+        return hue_rgb(self.cap("light", "color_rgb"))
+
     def summary(self) -> dict:
         """Compact view for agents / UI."""
         light = self.by_role("light")
@@ -116,7 +123,7 @@ class HomeState(BaseModel):
             "aquecedor_ligado": self.plug_on,
             "aquecedor_potencia_w": self.plug_power_w,
             "luz": None if not light else {
-                "power": light.caps.get("power"), "cor": light.caps.get("color_rgb"),
+                "power": light.caps.get("power"), "cor": self.light_hue_rgb,
                 "brilho": light.caps.get("brightness"), "online": light.online,
             },
             "offline": [d.name for d in self.devices.values() if not d.online],
@@ -139,6 +146,18 @@ def _num(v: Any) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def hue_rgb(value: Any) -> tuple[int, int, int] | None:
+    """'102,56,0' -> (255, 140, 0): undo the brightness scaling of the reported colour."""
+    try:
+        r, g, b = (int(float(x)) for x in str(value).split(","))
+    except (TypeError, ValueError):
+        return None
+    m = max(r, g, b)
+    if m == 0:
+        return (0, 0, 0)
+    return tuple(round(c * 255 / m) for c in (r, g, b))
 
 
 # ---------------------------------------------------------------- normalise

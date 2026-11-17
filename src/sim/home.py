@@ -185,6 +185,12 @@ class SimHome:
             dev = self._device(d, dtype)
             dev["lastCommunicationTime"] = _now_ms() if online else 1
 
+    def _set_scaled_colour(self, dev: dict, base: list[int]) -> None:
+        # Real server behaviour: reported colour = requested colour * brightness / 100.
+        k = float(self._get(dev, "brightness") or 100) / 100
+        r, g, b = (round(c * k) for c in base)
+        self._set(dev, "color_rgb", f"{r},{g},{b}", redValue=r, greenValue=g, blueValue=b, _base=base)
+
     # -- MCP write mimic (used by execute() when SIMULATE=true) -------------
     def apply_capability(self, device_id: str, body: dict) -> dict:
         """Behaves like update_device_capabilities on the simulated home."""
@@ -194,10 +200,14 @@ class SimHome:
                 raise KeyError(f"device {device_id} not found")
             t = body["type"]
             if t == "color_rgb":
-                r, g, b = (int(body[k]) for k in ("redValue", "greenValue", "blueValue"))
-                self._set(dev, "color_rgb", f"{r},{g},{b}", redValue=r, greenValue=g, blueValue=b)
+                base = [int(body[k]) for k in ("redValue", "greenValue", "blueValue")]
+                self._set_scaled_colour(dev, base)
                 if dev["type"] == "bulb":
                     self._set(dev, "workMode", "colour")
+            elif t == "brightness" and dev["type"] == "bulb":
+                self._set(dev, "brightness", body["value"])
+                cap = next(c for c in dev["capabilities"] if c["type"] == "color_rgb")
+                self._set_scaled_colour(dev, cap.get("_base") or [255, 255, 255])
             elif t == "power" and dev["type"] == "plug":
                 on = body["value"] == "on"
                 self._set(dev, "power", body["value"])
