@@ -20,3 +20,9 @@ So test 1 failed only because the Light was offline. To show a status colour: se
 then `brightness` (100 for emergencies). Compare colours after normalising (`hue_rgb`).
 
 Scenario payload that works: see `test2_scenario_create_response.json`.
+
+## Timer retest with Light online
+
+`post_timer_device` on the online Light with `{name,timestamp,isActive,capabilities:[power=off]}`
+still returns `HTTP 404`; `get_device_timers` stays `[]`. Not caused by the Light being offline.
+Until the body format is known, persistent plans use scenarios (`post_new_scenario`) instead.
