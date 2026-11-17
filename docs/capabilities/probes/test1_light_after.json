@@ -1,0 +1,54 @@
+{
+  "name": "Light",
+  "id": "b667d87c-2566-440a-afce-02d9ec82df1b",
+  "type": "bulb",
+  "capabilities": [
+    {
+      "name": "",
+      "type": "brightness",
+      "value": 100,
+      "min": 1,
+      "max": 100
+    },
+    {
+      "name": "",
+      "type": "temperature",
+      "value": 100,
+      "min": 0,
+      "max": 100
+    },
+    {
+      "name": "",
+      "type": "color_rgb",
+      "value": "255,0,0",
+      "min": 0,
+      "max": 255,
+      "redValue": 255,
+      "greenValue": 0,
+      "blueValue": 0
+    },
+    {
+      "name": "",
+      "type": "power",
+      "availableValues": [
+        "on",
+        "off"
+      ],
+      "value": "off"
+    },
+    {
+      "name": "",
+      "type": "workMode",
+      "availableValues": [
+        "colour",
+        "music",
+        "white",
+        "scene"
+      ],
+      "value": "white"
+    }
+  ],
+  "roomName": "Hack 7",
+  "lastCommunicationTime": 1793806275648,
+  "pairedTime": 1793805645489
+}

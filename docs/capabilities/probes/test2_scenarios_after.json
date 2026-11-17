@@ -1,0 +1,50 @@
+{
+  "scenarios": [
+    {
+      "name": "TEST_janela_aberta_ambar",
+      "homeId": "d068b37f-eaa3-4f76-b39c-2d6860ab8c57",
+      "triggerLogic": "AND",
+      "isActive": false,
+      "isVirtual": false,
+      "image": "",
+      "triggers": [
+        {
+          "type": "device",
+          "device": {
+            "name": "",
+            "id": "20d98aec-c266-4707-bd27-d06bb51733b7"
+          },
+          "capabilities": [
+            {
+              "name": "",
+              "type": "sensorState",
+              "value": "alarm",
+              "operator": "="
+            }
+          ]
+        }
+      ],
+      "startActions": [
+        {
+          "type": "device",
+          "device": {
+            "name": "",
+            "id": "b667d87c-2566-440a-afce-02d9ec82df1b"
+          },
+          "capabilities": [
+            {
+              "name": "",
+              "type": "color_rgb",
+              "redValue": 255,
+              "greenValue": 140,
+              "blueValue": 0
+            }
+          ]
+        }
+      ],
+      "presetScenarioId": "",
+      "id": "defe45f0-ba95-483c-8d32-17c29ebaf049",
+      "creationDate": 1794933807428
+    }
+  ]
+}
