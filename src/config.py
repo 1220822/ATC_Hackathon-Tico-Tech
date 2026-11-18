@@ -53,6 +53,9 @@ class Settings(BaseModel):
     setpoint_c: float
     # rooms, per-room parameters and simulated rooms (versioned, no secrets)
     home_config_file: Path
+    # history (SQLite): numeric readings stored every store_interval_s
+    history_db: Path
+    store_interval_s: float
 
 
 @lru_cache
@@ -78,4 +81,6 @@ def get_settings() -> Settings:
         sim_state_file=Path(os.environ.get("SIM_STATE_FILE", str(VAR_DIR / "sim_home.json"))),
         setpoint_c=_float("SETPOINT_C", 21.0),
         home_config_file=Path(os.environ.get("HOME_CONFIG_FILE", str(ROOT / "config" / "home.json"))),
+        history_db=Path(os.environ.get("HISTORY_DB", str(VAR_DIR / "history.db"))),
+        store_interval_s=_float("STORE_INTERVAL_S", 30.0),
     )

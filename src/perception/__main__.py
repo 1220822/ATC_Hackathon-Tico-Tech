@@ -1,6 +1,7 @@
 """Run only the perception layer and print events:
     python -m src.perception            (uses SIMULATE from .env)
     python -m src.perception --sim      (force the simulated home)
+Also records the history in var/history.db every STORE_INTERVAL_S seconds.
 """
 
 import json
@@ -11,6 +12,7 @@ import time
 
 from ..config import get_settings
 from ..memory import EventBus, SharedMemory
+from ..storage.history import History, HistoryRecorder
 from .poller import Perception
 from .sources import make_source
 
@@ -32,6 +34,9 @@ def main() -> None:
     perception = Perception(source, bus, memory, settings)
     perception.step()
     print("Estado inicial:", json.dumps(memory.state.summary(), ensure_ascii=False), flush=True)
+    recorder = HistoryRecorder(memory, History(settings.history_db), settings.store_interval_s)
+    recorder.step()
+    recorder.start_thread()
     try:
         perception.run()
     except KeyboardInterrupt:
