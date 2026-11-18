@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gémeo digital da casa</title>
 <link rel="stylesheet" href="/twin/ui/twin.css">
+<link rel="stylesheet" href="/chat/ui/chat.css">
 <script type="importmap">
 {
   "imports": {
@@ -47,7 +48,13 @@
       <ol id="linha-lista"><li class="vazio">Sem eventos ainda.</li></ol>
     </section>
   </aside>
+  <aside id="chat" aria-label="Chat com o Coordenador"></aside>
 </main>
 <script type="module" src="/twin/ui/twin.js"></script>
+<script type="module">
+import { mountChat } from "/chat/ui/chat.js";
+mountChat(document.getElementById("chat"), { compact: false });
+</script>
+<script type="module" src="/chat/ui/knowledge.js"></script>
 </body>
 </html>

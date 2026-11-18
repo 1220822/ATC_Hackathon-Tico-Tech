@@ -99,6 +99,9 @@ class HumidityMaxValue(_Strict):
 class AutonomyValue(_Strict):
     category: Category
     level: Level
+    # learned autonomy applies to one kind of decision only (src.storage.decisions.decision_kind)
+    kind: str | None = Field(None, max_length=200)
+    description: str | None = Field(None, max_length=300)
 
 
 class QuietHoursValue(_Strict):
@@ -182,5 +185,5 @@ def identity(scope: str, key: str, value: dict) -> tuple | None:
     if key in MULTI_KEYS:
         return None
     if key == "autonomy":
-        return (scope, key, value.get("category"))
+        return (scope, key, value.get("category"), value.get("kind"))
     return (scope, key)

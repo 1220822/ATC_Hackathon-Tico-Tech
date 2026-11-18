@@ -400,12 +400,12 @@ class Coordinator:
                                      getattr(p, "motivo", "")))
         return verdict
 
-    def autonomy(self, category: str) -> str:
+    def autonomy(self, category: str, kind: str | None = None) -> str:
         """auto | perguntar | nunca. Without a preference memory (tests, old setups) agent proposals
         approved by the Coordinator run on their own, as before."""
         if self.prefs is None:
             return "auto"
-        return self.prefs.autonomy(category)
+        return self.prefs.autonomy(category, kind)
 
     def _arbitrate(self, agent: str, reply, candidates: list, events: list[Event]) -> list[Decision]:
         """Ask the Coordinator agent (one call for this agent's proposals; one arbitration at a time,
@@ -478,7 +478,8 @@ class Coordinator:
         perguntar -> pending decision shown in the chat; nunca -> only recorded and reported.
         force_ask (goes against a preference, or the LLM could not confirm) turns auto into perguntar."""
         category = category_for(agent, dev)
-        level = self.autonomy(category)
+        kind = decision_kind(trig.type if trig else None, dev.id, body)
+        level = self.autonomy(category, kind)
         if force_ask and level == "auto":
             level = "perguntar"
         what = _what(dev, p.acao)
@@ -499,7 +500,6 @@ class Coordinator:
                           trigger=trig, agent=agent, proposals=props, autonomy="auto")
             return d
         if level == "perguntar":
-            kind = decision_kind(trig.type if trig else None, dev.id, body)
             if self.decisions is not None and any(x["kind"] == kind for x in self.decisions.pending()):
                 return self.memory.add_decision(Decision(**self._common(dev, body), status="informação",
                                                          message=f"Já estou à espera da tua resposta para {what}."))
@@ -733,3 +733,156 @@ class Coordinator:
                     self._mcp = McpClient(allow_write=True)
                 mcp = self._mcp
             return route_write(state, dev.id, body, self.s, mcp=mcp, sim=self._sim)
+
+    # -- 4. answers from the chat: pending decisions, rules (MCP scenarios), security -------
+    PENDING_TTL_S = 30 * 60  # an unanswered proposal goes stale: the house has moved on
+
+    def resolve_pending(self, decision_id: str, response: str, comment: str | None = None) -> dict:
+        """The user answered a pending decision (Aprovar / Rejeitar / Alterar). Approve re-checks the
+        guardrails on the latest state and executes; the answer is stored with the decision."""
+        if self.decisions is None:
+            raise RequestRefused("Sem memória de decisões.")
+        rec = self.decisions.get(decision_id)
+        if rec is None:
+            raise RequestRefused("Decisão desconhecida.")
+        if rec["status"] != "pending" or rec.get("user_response"):
+            raise RequestRefused("Esta decisão já não está à espera de resposta.")
+        self.decisions.respond(decision_id, response, comment)
+        if response != "approved":
+            self.decisions.set_status(decision_id, "rejected",
+                                      explanation=(rec["explanation"] or "") + (" Rejeitada por ti." if response == "rejected"
+                                                                               else " Alterada por ti."))
+            return self.decisions.get(decision_id)
+        if time.time() - rec["ts"] > self.PENDING_TTL_S:
+            self.decisions.set_status(decision_id, "vetoed", explanation=(rec["explanation"] or "") +
+                                      " Expirou: passou demasiado tempo e a casa pode ter mudado.")
+            raise RequestRefused("Esta proposta expirou (mais de 30 min). Se ainda fizer sentido, os agentes voltam a propor.")
+        state = self.memory.state
+        body = {k: v for k, v in (rec["decision"] or {}).items() if k != "device_id"}
+        dev_id = (rec["decision"] or {}).get("device_id")
+        try:
+            dev = self.guard(state, dev_id, body.get("type", "power"), body.get("value"))
+        except (UnknownDevice, RequestRefused) as e:
+            self.decisions.set_status(decision_id, "vetoed", explanation=(rec["explanation"] or "") + f" Não executada: {e}.")
+            return self.decisions.get(decision_id)
+        if self.emergency_active and body.get("value") == "on":
+            self.decisions.set_status(decision_id, "vetoed", explanation=(rec["explanation"] or "")
+                                      + " Não executada: há uma emergência de fumo ativa.")
+            return self.decisions.get(decision_id)
+        if dev.caps.get(body.get("type")) == body.get("value"):
+            self.decisions.set_status(decision_id, "executed", explanation=(rec["explanation"] or "") + " Já estava assim.")
+            return self.decisions.get(decision_id)
+        status, note = self._run(state, dev, body)
+        if status != "erro":
+            self._remember(dev.id, body.get("value"), "Utilizador")
+        self.decisions.set_status(decision_id, map_status(status), explanation=f"{rec['explanation'] or ''} Aprovada por ti. {note}".strip())
+        self.memory.add_decision(Decision(**self._common(dev, body), status=status,
+                                          message=f"Aprovado por ti: {_what(dev, body.get('value'))}. {note}"))
+        return self.decisions.get(decision_id)
+
+    def guard_scenario(self, state: HomeState, payload: dict) -> None:
+        """Rules for scenarios we create: TT_ name, only devices that exist, only light/plug actions."""
+        name = str(payload.get("name", ""))
+        if not name.startswith("TT_"):
+            raise RequestRefused("os cenários criados pelo Coordenador têm de começar por TT_")
+        if not payload.get("triggers"):
+            raise RequestRefused("um cenário precisa de pelo menos uma condição")
+        for part in ("triggers", "startActions", "endActions"):
+            for item in payload.get(part) or []:
+                dev_id = (item.get("device") or {}).get("id")
+                dev = state.devices.get(dev_id)
+                if dev is None:
+                    raise RequestRefused(f"dispositivo desconhecido no cenário: {dev_id}")
+                if part != "triggers" and dev.role not in ("light", "plug"):
+                    raise RequestRefused(f"o cenário só pode atuar em luzes e tomadas, não em {dev.name}")
+
+    def execute_tool(self, tool: str, args: dict) -> dict:
+        """The only path for scenario / security writes (DRY_RUN respected; SIMULATE keeps them in a file)."""
+        with self._lock:
+            if self.s.dry_run:
+                return {"tool": tool, "args": args, "dry_run": True, "executed": False}
+            if self.s.simulate:
+                return {"tool": tool, "args": args, "dry_run": False, "executed": True,
+                        "result": _sim_tool(self.s, tool, args)}
+            if self._mcp is None:
+                from .mcp_client import McpClient
+                self._mcp = McpClient(allow_write=True)
+            return {"tool": tool, "args": args, "dry_run": False, "executed": True,
+                    "result": self._mcp.call(tool, **args)}
+
+    def create_scenario(self, payload: dict, explanation: str) -> dict:
+        """User-confirmed rule -> post_new_scenario (guard + execute). Returns {status, scenario_id, note}."""
+        state = self.memory.state
+        if state is None:
+            raise RequestRefused("Estado da casa ainda não disponível.")
+        self.guard_scenario(state, payload)
+        try:
+            out = self.execute_tool("post_new_scenario", payload)
+        except Exception as e:  # noqa: BLE001
+            self._persist(status="rejected", explanation=f"{explanation} Falhou: {e}", agent="Utilizador",
+                          trigger={"type": "chat_rule"}, decision={"tool": "post_new_scenario", **payload})
+            raise RequestRefused(f"o MCP recusou o cenário ({str(e)[:120]})") from None
+        result = out.get("result") or {}
+        if isinstance(result, dict):
+            result = result.get("data", result)
+        scenario_id = result.get("id") if isinstance(result, dict) else None
+        status = "dry_run" if out["dry_run"] else "executed"
+        note = ("Dry-run: o cenário não foi criado no MCP." if out["dry_run"] else
+                "Cenário criado no simulador." if self.s.simulate else "Cenário criado no MCP.")
+        self._persist(status=status, explanation=f"{explanation} {note}", agent="Utilizador", autonomy="utilizador",
+                      trigger={"type": "chat_rule"}, decision={"tool": "post_new_scenario", "scenario_id": scenario_id,
+                                                               **payload})
+        self.memory.add_decision(Decision(agent="Coordenador", status="dry-run" if out["dry_run"] else "executada",
+                                          message=f"Regra {payload['name']}: {note}"))
+        return {"status": status, "scenario_id": scenario_id, "note": note}
+
+    def set_scenario_active(self, scenario_id: str | None, active: bool, name: str = "") -> dict:
+        """Revoking a rule deactivates its scenario (there is no tool to delete scenarios)."""
+        if not scenario_id:
+            return {"status": "skipped", "note": "A regra não tinha cenário no MCP."}
+        out = self.execute_tool("patch_scenario_activation", {"scenarioId": scenario_id, "isActive": active})
+        status = "dry_run" if out["dry_run"] else "executed"
+        note = ("Dry-run: " if out["dry_run"] else "") + f"cenário {name or scenario_id} {'ativado' if active else 'desativado'}."
+        self._persist(status=status, explanation=note, agent="Utilizador", autonomy="utilizador",
+                      trigger={"type": "chat_rule"}, decision={"tool": "patch_scenario_activation",
+                                                               "scenarioId": scenario_id, "isActive": active})
+        return {"status": status, "note": note}
+
+    SECURITY_MODES = {"armar_casa": "STAY", "armar_ausente": "AWAY", "desarmar": "DISARMED"}
+
+    def set_security(self, mode: str, confirmed: bool) -> dict:
+        """Arm/disarm: always needs the user's explicit confirmation (no autonomy level, no agent)."""
+        if not confirmed:
+            raise RequestRefused("armar ou desarmar exige sempre a tua confirmação")
+        if mode not in ("STAY", "AWAY", "DISARMED"):
+            raise RequestRefused("modo de segurança inválido")
+        out = self.execute_tool("patch_home_security_status", {"status": mode})
+        status = "dry_run" if out["dry_run"] else "executed"
+        note = "Dry-run: nada foi enviado." if out["dry_run"] else "Feito."
+        self._persist(status=status, explanation=f"Segurança → {mode}, confirmado por ti. {note}", agent="Utilizador",
+                      autonomy="confirmacao", trigger={"type": "chat_security"},
+                      decision={"tool": "patch_home_security_status", "status": mode})
+        return {"status": status, "note": note}
+
+
+def _sim_tool(settings, tool: str, args: dict):
+    """SIMULATE=true: scenarios live in var/sim_scenarios.json (no MCP)."""
+    import json
+    import uuid
+    path = settings.sim_state_file.with_name("sim_scenarios.json")
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"scenarios": [], "security": None}
+    result: dict = {}
+    if tool == "post_new_scenario":
+        result = {**args, "id": uuid.uuid4().hex}
+        data["scenarios"].append(result)
+    elif tool == "patch_scenario_activation":
+        for sc in data["scenarios"]:
+            if sc["id"] == args.get("scenarioId"):
+                sc["isActive"] = bool(args.get("isActive"))
+                result = sc
+    elif tool == "patch_home_security_status":
+        data["security"] = args.get("status")
+        result = {"status": args.get("status")}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    return result

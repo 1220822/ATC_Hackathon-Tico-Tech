@@ -17,6 +17,11 @@ Endpoints (rooms by id or name):
     GET /twin/state?n=30                                      digital twin: layout + device values + events
     GET /twin/stream                                          the same, live (Server-Sent Events)
     POST /coordinator/request {device_id, action: on|off}     user request -> Coordinator (guard, dry-run)
+    POST /chat {text}                                         chat with the Coordinator -> new messages
+    GET /chat/messages?after=<id>                             chat history (polling)
+    POST /chat/action {action, id, response, comment}         buttons: confirm/cancel, decision, suggestion
+    GET /chat/pending                                         pending decisions, open question, suggestions
+    GET /events, GET /decisions                               data memory (var/home.db)
     GET /agents/status                                        A2A agents as seen by the Coordinator
     GET /tools/consumo_por_hora?divisao=&horas=               read-only tools of the LLM agents
     GET /tools/tendencia_temperatura?divisao=&horas=&periodo_min=
@@ -34,7 +39,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
 from .context import Memories
@@ -54,6 +59,17 @@ from .writes import UnknownDevice
 class VisionAnalyzeRequest(BaseModel):
     divisao: str | None = None
     contexto: Literal["intrusion", "smoke", "general"] = "general"
+
+
+class ChatIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class ChatActionIn(BaseModel):
+    action: str = Field(min_length=1, max_length=40)
+    id: str | None = Field(None, max_length=64)
+    response: str | None = Field(None, max_length=40)
+    comment: str | None = Field(None, max_length=1000)
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 UI_FILE = UI_DIR / "index.html"
@@ -77,7 +93,7 @@ def room_view(st: HomeState, r: RoomState) -> dict:
 
 
 def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinator | None = None,
-               vision_worker=None) -> FastAPI:
+               vision_worker=None, chat=None) -> FastAPI:
     app = FastAPI(title="Tico&Tech: casa por divisões", version="1.0")
     coordinator = coordinator or Coordinator(memory, settings)
     History(settings.history_db)  # make sure the file and schema exist
@@ -162,6 +178,7 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
 
     app.mount("/static", StaticFiles(directory=UI_DIR / "static"), name="static")  # vendored Three.js
     app.mount("/twin/ui", StaticFiles(directory=UI_DIR / "twin"), name="twin-ui")
+    app.mount("/chat/ui", StaticFiles(directory=UI_DIR / "chat"), name="chat-ui")
 
     @app.get("/twin", response_class=HTMLResponse, include_in_schema=False)
     def twin_page():
@@ -238,6 +255,36 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
     def list_decisions(n: int = Query(50, ge=1, le=500), status: str | None = None):
         return decisions_db.recent(n, status=status)
 
+    # -- chat with the Coordinator ---------------------------------------------------------
+    if chat is None and coordinator.memories is not None:
+        from .chat.service import ChatService
+        chat = ChatService(memory, settings, coordinator, coordinator.memories)
+    app.state.chat = chat
+
+    def need_chat():
+        if chat is None:
+            raise HTTPException(503, "Chat indisponível (sem memória de preferências).")
+        return chat
+
+    @app.post("/chat")
+    def chat_post(msg: ChatIn):
+        """One user message -> the new messages (the user's and the Coordinator's replies)."""
+        return {"messages": need_chat().handle(msg.text)}
+
+    @app.get("/chat/messages")
+    def chat_messages(after: int = Query(0, ge=0), n: int = Query(100, ge=1, le=500)):
+        return need_chat().store.after(after, n)
+
+    @app.post("/chat/action")
+    def chat_action(a: ChatActionIn):
+        return {"messages": need_chat().action(a.action, a.id, a.response, a.comment)}
+
+    @app.get("/chat/pending")
+    def chat_pending():
+        c = need_chat()
+        return {"decisions": decisions_db.pending(), "confirm": c.confirm,
+                "suggestions": c.insights.pending() if c.insights else []}
+
     @app.post("/coordinator/request")
     def coordinator_request(req: UserRequest):
         """Simple actions from the UI. Never writes directly: the Coordinator guards it and,
@@ -285,6 +332,15 @@ def main() -> None:
     bus.subscribe(EventStore(settings.history_db, is_writer=lambda: not recorder.standby).on_event)
     memories = Memories.open(settings.history_db)  # data history + preferences (var/home.db)
     coordinator = Coordinator(memory, settings, memories=memories)
+    from .chat.rules import RuleWatcher
+    from .chat.service import ChatService
+    from .llm import LLM
+    chat_llm = LLM.from_settings(settings) if settings.chat_llm else None
+    if chat_llm is not None:
+        chat_llm.warmup_async()
+    chat = ChatService(memory, settings, coordinator, memories, chat_llm)
+    coordinator.on_pending = chat.notify_pending  # pending decisions show up in the chat
+    bus.subscribe(RuleWatcher(memories.prefs, memory, lambda text: chat.say(text, kind="rule")).on_event)
     # fixed rules, straight from the bus, never through an LLM: smoke and intrusion
     bus.subscribe(coordinator.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
     vision_worker = None
@@ -323,7 +379,7 @@ def main() -> None:
           f"   ·   {'DRY-RUN' if settings.dry_run else 'ESCRITAS REAIS'}", flush=True)
     try:
         # open SSE streams would otherwise keep Ctrl+C waiting
-        uvicorn.run(create_app(memory, settings, coordinator, vision_worker=vision_worker),
+        uvicorn.run(create_app(memory, settings, coordinator, vision_worker=vision_worker, chat=chat),
                     host=a.host, port=a.port, log_level="warning", timeout_graceful_shutdown=2)
     finally:
         if vision_worker is not None:

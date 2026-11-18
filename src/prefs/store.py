@@ -113,20 +113,24 @@ class PrefStore(SqliteStore):
         return self.get_active(scopes)
 
     # -- typed helpers ---------------------------------------------------------------
-    def autonomy(self, category: str) -> str:
-        """auto | perguntar | nunca for a category (default: perguntar)."""
-        if category not in CATEGORIES:
-            return DEFAULT_LEVEL
-        for p in reversed(self.get_active("global", "autonomy")):
-            if p["value"].get("category") == category:
-                return p["value"]["level"]
-        return DEFAULT_LEVEL
+    def autonomy(self, category: str, kind: str | None = None) -> str:
+        """auto | perguntar | nunca for a category (default: perguntar). A level learned for this exact
+        kind of decision wins over the category level, except that "nunca" for the category always wins."""
+        p = self.autonomy_pref(category, kind)
+        return p["value"]["level"] if p else DEFAULT_LEVEL
 
-    def autonomy_pref(self, category: str) -> dict | None:
-        for p in reversed(self.get_active("global", "autonomy")):
-            if p["value"].get("category") == category:
-                return p
-        return None
+    def autonomy_pref(self, category: str, kind: str | None = None) -> dict | None:
+        if category not in CATEGORIES:
+            return None
+        rows = list(reversed(self.get_active("global", "autonomy")))
+        general = next((p for p in rows if p["value"].get("category") == category and not p["value"].get("kind")), None)
+        if general and general["value"]["level"] == "nunca":
+            return general
+        if kind:
+            specific = next((p for p in rows if p["value"].get("kind") == kind), None)
+            if specific:
+                return specific
+        return general
 
     def setpoint(self, room_id: str, when: datetime | None = None) -> tuple[float | None, dict | None]:
         """(target °C now, preference row) for a room; room scope wins over global."""

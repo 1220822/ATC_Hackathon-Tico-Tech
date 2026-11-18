@@ -44,6 +44,8 @@ button:hover { border-color: var(--muted); }
 #principal { flex: 1; display: flex; min-height: 0; }
 #cena { flex: 1; position: relative; min-width: 0; }
 #cena canvas { display: block; }
+#chat { width: 380px; flex: none; border-left: 1px solid var(--line); min-height: 0; }
+@media (max-width: 1100px) { #lateral { display: none; } }
 #lateral { width: 340px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--line);
            background: var(--panel); min-height: 0; }
 

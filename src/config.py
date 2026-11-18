@@ -65,6 +65,8 @@ class Settings(BaseModel):
     llm_model: str
     llm_api_key: str  # local servers ignore it, but the OpenAI client wants one
     llm_reasoning_effort: str  # "none" (fast, default) | "low" | "medium" | "high" | "" = not sent
+    chat_llm: bool  # the chat classifies messages with the LLM (false = PT-PT rules only)
+    chat_timeout_s: float
     agents_enabled: bool  # the API process sends events to the agents over A2A
     agents_host: str
     agents_base_port: int  # Segurança = base+1, Energia = base+2, Conforto = base+3
@@ -125,6 +127,8 @@ def get_settings() -> Settings:
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT", "none").strip(),
+        chat_llm=_bool("CHAT_LLM", True),
+        chat_timeout_s=_float("CHAT_TIMEOUT_S", 30.0),
         agents_enabled=_bool("AGENTS", True),
         agents_host=os.environ.get("AGENTS_HOST") or "127.0.0.1",
         agents_base_port=int(_float("AGENTS_BASE_PORT", 9100)),
