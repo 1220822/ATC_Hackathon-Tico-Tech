@@ -348,11 +348,14 @@ class Coordinator:
                     conflicts[cr["id"]] = cr
                 elif lo <= temp <= hi or (p.acao == "on" and temp < lo) or (p.acao == "off" and temp > hi):
                     respects[cr["id"]] = cr
+        # ids the agent cited: only real, applicable ones, and never for temperature preferences
+        # (those depend on the time window and the real temperature, so only the code above decides)
+        computed = {"setpoint_c", "comfort_range_c", "autonomy", "layout"}
         for pid in getattr(p, "respects_preferences", []) or []:
-            if pid in applicable and pid not in conflicts:
+            if pid in applicable and pid not in conflicts and applicable[pid]["key"] not in computed:
                 respects[pid] = applicable[pid]
         for pid in getattr(p, "conflicts_with_preferences", []) or []:
-            if pid in applicable and pid not in respects:
+            if pid in applicable and pid not in respects and applicable[pid]["key"] not in computed:
                 conflicts[pid] = applicable[pid]
         return list(respects.values()), list(conflicts.values())
 
@@ -500,7 +503,10 @@ class Coordinator:
                           trigger=trig, agent=agent, proposals=props, autonomy="auto")
             return d
         if level == "perguntar":
-            if self.decisions is not None and any(x["kind"] == kind for x in self.decisions.pending()):
+            # one question per device and action, whatever event triggered it (no spam in the chat)
+            if self.decisions is not None and any(
+                    x["kind"] == kind or (x.get("device_id") == dev.id and (x.get("decision") or {}).get("value") == body.get("value"))
+                    for x in self.decisions.pending()):
                 return self.memory.add_decision(Decision(**self._common(dev, body), status="informação",
                                                          message=f"Já estou à espera da tua resposta para {what}."))
             rec = self._persist(status="pending", explanation=why, dev=dev, body=body, trigger=trig, agent=agent,
@@ -783,6 +789,11 @@ class Coordinator:
         self.decisions.set_status(decision_id, map_status(status), explanation=f"{rec['explanation'] or ''} Aprovada por ti. {note}".strip())
         self.memory.add_decision(Decision(**self._common(dev, body), status=status,
                                           message=f"Aprovado por ti: {_what(dev, body.get('value'))}. {note}"))
+        for other in self.decisions.pending():  # twins of this question are answered by it
+            if other["id"] != decision_id and other.get("device_id") == dev.id \
+                    and (other.get("decision") or {}).get("value") == body.get("value"):
+                self.decisions.set_status(other["id"], "vetoed",
+                                          explanation=(other["explanation"] or "") + f" Resolvida pela decisão {decision_id}.")
         return self.decisions.get(decision_id)
 
     def guard_scenario(self, state: HomeState, payload: dict) -> None:

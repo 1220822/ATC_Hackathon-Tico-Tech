@@ -191,6 +191,16 @@ class TestPendingAndLearning(ChatCase):
         self.assertEqual(self.mem.prefs.get_active(key="autonomy"), [])
         self.assertTrue(self.mem.prefs.muted(f"learn:{rec['kind']}"))
 
+    def test_faz_sempre_assim(self):
+        rec = self.propose()
+        msgs = self.chat.handle("Faz sempre assim")
+        self.assertEqual(self.mem.decisions.get(rec["id"])["user_response"], "approved")
+        self.assertIn("Vou passar a fazer isto sozinha", self.last(msgs))
+        self.assertEqual(self.mem.prefs.get_active(key="autonomy"), [])
+        self.chat.handle("sim")
+        [p] = self.mem.prefs.get_active(key="autonomy")
+        self.assertEqual((p["value"]["kind"], p["value"]["level"]), (rec["kind"], "auto"))
+
     def test_reject_from_chat_text(self):
         rec = self.propose()
         self.chat.handle("não")

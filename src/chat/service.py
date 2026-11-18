@@ -183,6 +183,8 @@ class ChatService:
             if self.layout is None:
                 return [self.say("O ajuste do 3D ainda não está disponível.")]
             return self.layout.from_chat(intent.layout, text, self)
+        if intent.intent == "responder_proposta" and intent.sempre:
+            return self._always(pending_dec)
         if intent.intent == "responder_proposta":
             if not pending_dec:
                 return [self.say("Não há nenhuma proposta à espera de resposta.")]
@@ -376,14 +378,30 @@ class ChatService:
                 out += self.handle(comment)[1:]
         return out
 
-    def _maybe_learn(self, rec: dict) -> list[dict]:
+    def _always(self, pending_dec: list) -> list[dict]:
+        """«Faz sempre assim»: approve the pending decision (if any) and offer to do it alone from now on."""
+        out: list[dict] = []
+        if pending_dec:
+            out += self._answer_decision(pending_dec[-1]["id"], "approved", None)
+            rec = self.mem.decisions.get(pending_dec[-1]["id"])
+        else:
+            answered = [d for d in self.mem.decisions.recent(30) if d.get("user_response") == "approved"]
+            rec = answered[0] if answered else None
+        if rec is None:
+            return out + [self.say("Não sei a que decisão te referes: ainda não aprovaste nenhuma.")]
+        if self.confirm is not None and self.confirm["kind"] == "learn":
+            return out  # the 3-approvals question was just asked
+        learn = self._maybe_learn(rec, force=True)
+        return out + (learn or [self.say("Isso já é automático.")])
+
+    def _maybe_learn(self, rec: dict, force: bool = False) -> list[dict]:
         kind = rec.get("kind")
-        if not kind or self.mem.decisions.approval_streak(kind) < 3:
+        if not kind or (not force and self.mem.decisions.approval_streak(kind) < 3):
             return []
         category = rec.get("category") or "energia"
         if category not in CATEGORY_PT or self.mem.prefs.autonomy(category, kind) == "auto":
             return []
-        if self.mem.prefs.muted(f"learn:{kind}"):
+        if self.mem.prefs.muted(f"learn:{kind}") and not force:
             return []
         dec = rec.get("decision") or {}
         state = self._state()
@@ -393,6 +411,9 @@ class ChatService:
         when = (rec.get("trigger") or {}).get("message") or "nesta situação"
         value = {"category": category, "level": "auto", "kind": kind,
                  "description": f"{what} quando: {when}"[:300]}
+        if force:
+            return [self._ask("learn", f"Vou passar a fazer isto sozinha: {what} quando acontecer isto ({when.rstrip('.')}). "
+                              "Só isto; o resto continua a pedir-te aprovação. Confirmas?", {"value": value})]
         return [self._ask("learn", f"Aprovaste 3 vezes seguidas: {what} ({when.rstrip('.')}). Queres que passe a "
                           "fazer isto sozinha? Só isto; o resto continua a pedir-te aprovação.", {"value": value})]
 

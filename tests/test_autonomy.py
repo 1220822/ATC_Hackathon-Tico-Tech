@@ -90,6 +90,20 @@ class TestLevels(AutonomyCase):
         self.mem.prefs.set("global", "autonomy", {"category": "energia", "level": "nunca"})
         self.assertEqual(self.mem.prefs.autonomy("energia", kind), "nunca")
 
+    def test_one_question_per_device_and_action(self):
+        self.propose_off()
+        self.coord.consider("Energia", AgentReply(resumo="A temperatura desce.", propostas=[Proposal(device_id=PLUG, acao="off")]),
+                            [Event(type="temperature_dropping", message="A temperatura no Quarto está a descer.")])
+        self.assertEqual(len(self.mem.decisions.pending()), 1)
+
+    def test_setpoint_outside_its_window_is_not_cited(self):
+        self.mem.prefs.set(f"room:{QUARTO}", "setpoint_c", {"periods": [{"start": "03:00", "end": "03:01", "c": 25}]})
+        sp = self.mem.prefs.get_active(key="setpoint_c")[0]
+        state = self.memory.state
+        r, c = self.coord.evaluate_prefs("Energia", Proposal(device_id=PLUG, acao="off", respects_preferences=[sp["id"]]),
+                                         state.devices[PLUG], state)
+        self.assertEqual((r, c), ([], []))
+
     def test_approving_a_pending_decision_executes_it(self):
         d = self.propose_off()
         done = self.coord.resolve_pending(d["id"], "approved")

@@ -77,6 +77,7 @@ class ChatIntent(BaseModel):
     layout: LayoutRequest | None = None
     comando: CommandRequest | None = None
     resposta: Literal["aprovar", "rejeitar", "alterar", "silenciar"] | None = None
+    sempre: bool = Field(False, description="«faz sempre assim»: passa a fazer esta decisão sozinha")
     comentario: str | None = None
     origem: Literal["llm", "regras"] = "regras"
 
@@ -315,6 +316,9 @@ def classify_rules(text: str, rooms: list[str], pending_decision: bool = False,
     room = find_room(text, rooms)
     yes = re.match(r"^(sim|aprovo|aprova|ok|pode ser|faz isso|claro|aceito|aceita|confirmo|avanca|isso)\b", t)
     no = re.match(r"^(nao|rejeito|rejeita|deixa|cancela|esquece|agora nao)\b", t)
+    if re.search(r"(faz|fazes|faca) (sempre|isto sempre|isso sempre) assim|sempre assim|a partir de agora (faz|fazes|podes)"
+                 r"|faz (isto|isso) sozinh|passa a fazer (isto|isso)", t) and not find_category(t):
+        return ChatIntent(intent="responder_proposta", resposta="aprovar", sempre=True)
     if re.search(r"nao (voltes a|precisas de) sugerir|nao sugiras mais|nunca mais sugiras", t):
         return ChatIntent(intent="responder_sugestao", resposta="silenciar")
     if find_level(t) in ("auto", "nunca") or re.search(r"sem (me )?perguntar|pergunta-me|pede-me", t):
@@ -350,7 +354,7 @@ def classify(text: str, llm, rooms: list[str], pending_decision: bool = False,
              pending_suggestion: bool = False) -> ChatIntent:
     """LLM first (structured output), rules as a fallback and to fill missing fields."""
     rules = classify_rules(text, rooms, pending_decision, pending_suggestion)
-    if llm is None:
+    if llm is None or rules.sempre:
         return rules
     from ..llm import LLMError
     ctx = []
