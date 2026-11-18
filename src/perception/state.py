@@ -49,6 +49,7 @@ EventType = Literal[
     "smoke_detected", "security_alarm", "alarm_cancelled",
     "security_mode_changed", "alarm_state_changed", "hub_alarm", "tamper_alarm",
     "camera_motion", "camera_sound",
+    "camera_analysis",  # evento sintético publicado pelo VisionWorker (não produzido por diff())
     "plug_switched", "plug_power_changed", "light_changed",
     "device_offline", "device_online",
     "tick",

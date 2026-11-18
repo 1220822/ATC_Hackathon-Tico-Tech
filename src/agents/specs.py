@@ -17,11 +17,12 @@ Smoke never reaches the LLMs: the emergency path is deterministic (src.coordinat
 """
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
+
+from ..json_utils import json_candidates as _json_candidates
 
 COMMON = """
 Regras:
@@ -83,7 +84,10 @@ AGENTS: dict[str, AgentSpec] = {
         description="Avalia intrusões, contactos abertos com a casa armada, movimento na câmara e manipulação.",
         instructions="És o agente de Segurança de uma casa inteligente. Avalias se um evento é uma ameaça "
                      "(janela/porta aberta com a casa armada, movimento ou som na câmara, manipulação, alarme). "
-                     "Podes propor acender uma luz para dissuadir, se fizer sentido. Explica o risco numa frase.",
+                     "Se receberes um evento camera_analysis, usa a confirmação visual (pessoas, janela/porta, fumo) "
+                     "para avaliar se é alarme real ou falso alarme; se não houver pessoas e parecer falso alarme, "
+                     "devolve propostas vazias. Podes propor acender uma luz para dissuadir, se fizer sentido. "
+                     "Explica o risco numa frase.",
     ),
     "energia": AgentSpec(
         key="energia", name="Energia", port_offset=2, priority=3,
@@ -142,26 +146,6 @@ class CoordinatorReply(BaseModel):
 
 class BadReply(ValueError):
     pass
-
-
-def _json_candidates(text: str):
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
-    yield text
-    for m in re.finditer(r"```(?:json)?\s*(.*?)```", text, flags=re.S):
-        yield m.group(1)
-    # last balanced {...} block
-    depth, start = 0, None
-    blocks = []
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}" and depth:
-            depth -= 1
-            if depth == 0 and start is not None:
-                blocks.append(text[start:i + 1])
-    yield from reversed(blocks)
 
 
 def parse_reply(text: str, model: type[BaseModel] = AgentReply):

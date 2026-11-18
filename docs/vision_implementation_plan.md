@@ -18,10 +18,11 @@ Antes de escrever qualquer linha de código, lê integralmente [docs/vision_arch
   - `Sala` (MCP real): `Camera`, `Security hub`, `Contact sensor`, `Smoke sensor` *(única divisão com câmara)*.
   - `Quarto` (MCP real): `Light`, `Plug`, `Temperature sensor`.
   - `Cozinha` (simulada): `temperature`, `contact`, `plug` *(sem câmara)*.
-- **Servidor interno de modelos (verificado ao vivo em [docs/vision_architecture.md §2.3](vision_architecture.md#L46-L57)):**
-  - Ollama em `http://192.168.2.161:1234` (API OpenAI-compatible em `/v1/chat/completions`).
-  - Modelo residente em VRAM: **`qwen3.8:latest`** (`27.3B`, `Q4_K_M`, `27.36 GB` em VRAM) com capabilities `['completion', 'vision', 'tools', 'thinking']`.
-  - `reasoning_effort="none"` funciona neste servidor (HTTP 200 validado em ensaio visual; latência ~3–8 s por frame).
+- **Servidor interno de modelos — Ollama (confirmado pela equipa; validado ao vivo em [docs/vision_architecture.md §2.3](vision_architecture.md#L46-L57)):**
+  - **Runtime:** **Ollama** (não LM Studio), expondo API OpenAI-compatible em `/v1/chat/completions` e endpoints nativos `/api/ps` e `/api/show`.
+  - **URLs:** servidor da equipa em `http://192.168.2.161:1234/v1` (porta `1234`); se correr **Ollama localmente**, a porta por omissão é **`11434`** (`http://localhost:11434/v1`, configurável via `LLM_BASE_URL` / `VISION_BASE_URL` no `.env`).
+  - **Modelo residente em VRAM:** **`qwen3.8:latest`** (`27.3B`, `Q4_K_M`, `27.36 GB` em VRAM) com capabilities `['completion', 'vision', 'tools', 'thinking']`. Reutilizar o mesmo modelo dos agentes evita *model swapping* e *cold-start* (`OLLAMA_KEEP_ALIVE` padrão = 5 min de inatividade).
+  - **Parâmetros Ollama validados:** `reasoning_effort="none"` (HTTP 200 validado em ensaio visual; latência ~3–8 s por frame) e suporte nativo a `response_format={"type": "json_object"}` em `/v1/chat/completions`. `Authorization: Bearer ...` é aceite/ignorado pelo Ollama.
 - **Câmara física:** o MCP da Altice não fornece vídeo/frames. A captura ocorre fora do MCP (`CAMERA_RTSP_URL`). Atualmente a câmara física ainda não está na rede, pelo que o desenvolvimento e os testes usam `FileFrameSource` (com `RtspFrameSource` e `WebcamFrameSource` prontos atrás do mesmo `Protocol`).
 - **Padrão de integração escolhido ([docs/vision_architecture.md §3.2](vision_architecture.md#L68-L132)):**
   - **Opção 1 (Enriquecimento Push + Consulta Pull):** `VisionWorker` escuta triggers no `EventBus` numa thread dedicada, captura e analisa o frame via `qwen3.8:latest`, guarda `VisionObservation` em `SharedMemory` + JPEG em `var/frames/`, regista o evento sintético `camera_analysis` em `SharedMemory` e publica-o no `EventBus`.
@@ -196,14 +197,15 @@ Executar no final de **cada fase**:
    - Implementar **`OpenAIVisionAnalyzer`**:
      - Mantém uma instância persistente de `httpx.Client` (`self._client = httpx.Client(timeout=timeout_s, transport=transport)`), protegida por `self._lock = threading.Lock()` (para garantir *thread-safety* total entre a worker thread e `analyze_now()`), com método `close()` chamado no encerramento do `VisionWorker`.
      - Deteta MIME type pelos *magic bytes* (`image/png` se `\x89PNG`, caso contrário `image/jpeg`), codifica em `data:<mime>;base64,...`.
-     - Envia `POST {base_url.rstrip('/')}/chat/completions` com:
+     - Envia `POST {base_url.rstrip('/')}/chat/completions` (compatível com o endpoint `/v1` do **Ollama**) com:
        - `model`: `settings.vision_model`
        - `temperature`: `0.0`
        - `max_tokens`: `500`
+       - `response_format`: `{"type": "json_object"}` *(suportado nativamente pelo Ollama para forçar JSON sintaticamente válido; se algum servidor devolver HTTP 400 por não suportar `response_format`, repetir 1x sem este campo)*
        - `reasoning_effort`: `settings.llm_reasoning_effort` (se não vazio; omissão `"none"`)
-       - Header `Authorization: Bearer {api_key}`
-       - Timeout: `settings.vision_timeout_s`
-     - Faz parse tolerante da resposta usando `json_candidates` de `src/json_utils.py` (remove `<think>...</think>` e code fences ` ```json `).
+       - Header `Authorization: Bearer {api_key}` *(ignorado pelo Ollama, mantido por compatibilidade OpenAI)*
+       - Timeout: `settings.vision_timeout_s` *(margem de 25 s para cobrir eventual cold-start do Ollama se o modelo tiver expirado após 5 min de inatividade)*
+     - Faz parse tolerante da resposta usando `json_candidates` de `src/json_utils.py` (rede de segurança contra `<think>...</think>` ou code fences caso outro modelo Ollama ignore `reasoning_effort`/`response_format`).
      - Distingue claramente `httpx.TimeoutException` (mapeado para `status="timeout"`) de erros HTTP/rede/JSON inválido (mapeado para `status="inference_error"`).
    - Implementar **`MockVisionAnalyzer`**:
      - Aceita um resultado pré-configurado ou callable `(context, trigger_type) -> payload`, para testes determinísticos e modo offline sem servidor Ollama.
@@ -211,7 +213,8 @@ Executar no final de **cada fase**:
 
 2. **Expandir `tests/test_vision.py` (Fase 3):**
    - Parsing de JSON limpo, JSON envolvido em ```` ```json ... ``` ```` e JSON precedido de `<think>raciocínio</think>`.
-   - Payload HTTP enviado por `OpenAIVisionAnalyzer` (usando `httpx.MockTransport` — zero rede!): verifica `model`, `max_tokens=500`, `temperature=0.0`, `reasoning_effort="none"`, presença de `image_url` base64 e prompt correto para `intrusion` (menciona janela/porta) vs. `smoke` (menciona fumo/chamas).
+   - Payload HTTP enviado por `OpenAIVisionAnalyzer` (usando `httpx.MockTransport` — zero rede!): verifica `model`, `max_tokens=500`, `temperature=0.0`, `response_format={"type": "json_object"}`, `reasoning_effort="none"`, presença de `image_url` base64 e prompt correto para `intrusion` (menciona janela/porta) vs. `smoke` (menciona fumo/chamas).
+   - Fallback de `response_format`: se a 1.ª resposta for HTTP 400 mencionando `response_format`, repete 1x sem esse campo e conclui com sucesso.
    - Tratamento de timeout (`httpx.ReadTimeout`) → `TimeoutError` / `status="timeout"`, HTTP 500 e JSON malformado → erro estruturado sem exceção não tratada.
 
 ### Critério de Saída (Fase 3)
@@ -345,15 +348,17 @@ Executar no final de **cada fase**:
 
 **Referência arquitetural:** [docs/vision_architecture.md §8.1](vision_architecture.md#L294-L305).
 
-Executar contra o servidor real `http://192.168.2.161:1234/v1` (`qwen3.8:latest`) em modo seguro (`SIMULATE=true`, `DRY_RUN=true`):
+Executar contra o servidor **Ollama** da equipa em `http://192.168.2.161:1234/v1` (ou contra Ollama local em `http://localhost:11434/v1`) com `qwen3.8:latest` em modo seguro (`SIMULATE=true`, `DRY_RUN=true`):
 
 1. Arrancar a API + agentes em modo simulado (garantindo explicitamente `VISION_TRIGGER_DISARMED="false"` para o Ensaio D):
    ```powershell
    $env:SIMULATE="true"; $env:DRY_RUN="true"; $env:POLL_INTERVAL_S="1"
    $env:VISION_ENABLED="true"; $env:VISION_TRIGGER_DISARMED="false"
    $env:LLM_BASE_URL="http://192.168.2.161:1234/v1"; $env:LLM_MODEL="qwen3.8:latest"
+   # Para Ollama local na própria máquina, usar: $env:LLM_BASE_URL="http://localhost:11434/v1"
    .venv\Scripts\python.exe -m src.api --sim --agents
    ```
+   *(Opcional: confirmar antes/depois via `GET http://192.168.2.161:1234/api/ps` — ou `localhost:11434/api/ps` — que apenas `qwen3.8:latest` permanece carregado em VRAM sem model swapping.)*
 2. Executar os 5 ensaios funcionais + validação de encerramento limpo:
    - **Ensaio A — Intrusão real (`cenario intrusao` com imagem de pessoa + janela aberta):** confirmar 1 única chamada visual, `has_person=True`, `window_or_door_open=True`, e resposta do Agente de Segurança com contexto visual.
    - **Ensaio B — Falso alarme (`cenario intrusao` com imagem vazia / animal):** confirmar `has_person=False`, `category="empty"|"pet"`, e identificação de falso alarme pelo Agente de Segurança.
