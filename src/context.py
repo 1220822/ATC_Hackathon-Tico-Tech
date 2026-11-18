@@ -71,6 +71,8 @@ def describe_pref(p: dict) -> str:
     if key == "humidity_max_pct":
         return f"humidade máxima {v['pct']:g} %"
     if key == "autonomy":
+        if v.get("kind"):
+            return f"{LEVEL_PT.get(v['level'], v['level'])}: {v.get('description') or v['kind']}"
         return f"autonomia {CATEGORY_PT.get(v['category'], v['category'])}: {LEVEL_PT.get(v['level'], v['level'])}"
     if key == "quiet_hours":
         return f"sem sugestões entre as {v['start']} e as {v['end']}"
@@ -185,9 +187,10 @@ def build_context(agent: str, trigger: Event | None, state: HomeState, mem: Memo
     similar = mem.decisions.similar(kind=kind, trigger_type=trigger.type if trigger else None,
                                     room=rooms[0] if rooms else None, n=3)
     decs = [{"quando": time.strftime("%d/%m %H:%M", time.localtime(d["ts"])),
-             "decisao": (d.get("explanation") or "")[:160], "estado": STATUS_PT.get(d["status"], d["status"]),
-             "utilizador": RESPONSE_PT.get(d.get("user_response"), d.get("user_response")),
-             **({"comentario": d["user_comment"]} if d.get("user_comment") else {})} for d in similar]
+             "decisao": (d.get("explanation") or "")[:160],
+             "resultado": STATUS_PT.get(d["status"], d["status"]),  # what the Coordinator / guardrails did
+             "resposta_do_utilizador": RESPONSE_PT.get(d.get("user_response"), d.get("user_response")),
+             **({"comentario_do_utilizador": d["user_comment"]} if d.get("user_comment") else {})} for d in similar]
     return {"dados": dados, "preferencias": prefs, "decisoes_semelhantes": decs}
 
 

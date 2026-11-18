@@ -36,8 +36,9 @@ Regras:
 - O "resumo" descreve a situação numa frase; não repitas nele as propostas (vão no campo "propostas").
 - A secção "Memória" traz o histórico da casa (tendência das últimas 2 h, consumos, eventos), as
   preferências ativas do utilizador (cada uma com um id) e as últimas decisões semelhantes com a resposta
-  do utilizador. Respeita as preferências; se uma proposta for contra uma, diz qual. Se o utilizador
-  rejeitou decisões iguais, não insistas sem um facto novo.
+  do utilizador. Respeita as preferências; se uma proposta for contra uma, diz qual. Só conta como
+  rejeição do utilizador "resposta_do_utilizador": "rejeitou"; "resultado": "recusada" foi o Coordenador
+  ou uma regra, noutra situação, e não te impede de propor quando os factos agora o justificam.
 - Em cada proposta, "respects_preferences" e "conflicts_with_preferences" são listas de ids de
   preferências da Memória (vazias se nenhuma se aplica). Nunca inventes ids.
 
@@ -55,6 +56,9 @@ Como decidir:
 - A casa é um só espaço: uma janela aberta numa divisão (ex.: Sala) arrefece as outras (ex.: Quarto).
   Aquecer com uma janela aberta em qualquer divisão é desperdício, mesmo que o aquecedor esteja a 0 W
   nesse instante (pode voltar a aquecer a qualquer momento).
+- Caso típico: janela aberta e aquecedor ligado -> APROVA desligar o aquecedor. "Aquecer para compensar a
+  janela aberta" NÃO é motivo para recusar: é precisamente o desperdício a evitar; o conforto resolve-se
+  fechando a janela. Só recusas se uma preferência do utilizador (secção "Preferências") disser o contrário.
 - Nunca inventes factos para justificar uma decisão (ex.: presença ou ausência de pessoas, horários).
 - Uma luz acesa não é desperdício: não sabes se há alguém na divisão, por isso recusa desligar luzes
   por poupança ou conforto.

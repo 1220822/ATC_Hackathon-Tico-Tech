@@ -71,7 +71,7 @@ class TestBuildContext(MemCase):
         self.assertIn("Quarto", ctx["dados"]["divisoes"])
         self.assertNotIn("Sala", ctx["dados"]["divisoes"])
         self.assertTrue(ctx["dados"]["divisoes"]["Quarto"]["tendencia_2h_15min"]["temperature"])
-        self.assertEqual(ctx["decisoes_semelhantes"][0]["utilizador"], "sem resposta")
+        self.assertEqual(ctx["decisoes_semelhantes"][0]["resposta_do_utilizador"], "sem resposta")
         self.assertIn("ontem_kwh_casa", ctx["dados"]["energia"])
         self.assertLess(len(render_context(ctx)), 2500)  # compact: the LLM may be local
         json.loads(render_context(ctx))

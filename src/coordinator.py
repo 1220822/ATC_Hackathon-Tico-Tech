@@ -504,9 +504,11 @@ class Coordinator:
             return d
         if level == "perguntar":
             # one question per device and action, whatever event triggered it (no spam in the chat)
-            if self.decisions is not None and any(
-                    x["kind"] == kind or (x.get("device_id") == dev.id and (x.get("decision") or {}).get("value") == body.get("value"))
-                    for x in self.decisions.pending()):
+            twin = next((x for x in (self.decisions.pending() if self.decisions is not None else [])
+                         if x["kind"] == kind or (x.get("device_id") == dev.id
+                                                  and (x.get("decision") or {}).get("value") == body.get("value"))), None)
+            if twin is not None:
+                self.decisions.refresh_pending(twin["id"], trigger_dict(trig), kind, why, props)
                 return self.memory.add_decision(Decision(**self._common(dev, body), status="informação",
                                                          message=f"Já estou à espera da tua resposta para {what}."))
             rec = self._persist(status="pending", explanation=why, dev=dev, body=body, trigger=trig, agent=agent,

@@ -88,6 +88,13 @@ class DecisionStore(SqliteStore):
             args.append(dumps(decision))
         self.execute(f"UPDATE decisions SET {', '.join(sets)} WHERE id = ?", args + [id])
 
+    def refresh_pending(self, id: str, trigger: dict | None, kind: str | None, explanation: str,
+                        proposals: list | None = None) -> None:
+        """A pending question gets the latest trigger (the situation the user will answer about)."""
+        self.execute("UPDATE decisions SET trigger = ?, kind = ?, explanation = ?, proposals = COALESCE(?, proposals), "
+                     "ts = ? WHERE id = ? AND status = 'pending'",
+                     (dumps(trigger), kind, explanation, dumps(proposals) if proposals else None, time.time(), id))
+
     def respond(self, id: str, response: UserResponse, comment: str | None = None,
                 now: float | None = None) -> dict | None:
         if response not in RESPONSES:
