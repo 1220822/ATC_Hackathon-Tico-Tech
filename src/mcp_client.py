@@ -6,6 +6,7 @@ long-running process survives them.
 
 import importlib.util
 import json
+import os
 import sys
 import threading
 from typing import Any
@@ -62,6 +63,9 @@ class McpClient:
     def call(self, tool: str, **args: Any) -> Any:
         if tool in WRITE_TOOLS and not self.allow_write:
             raise PermissionError(f"{tool} is a write tool; only the coordinator may call it")
+        if tool in WRITE_TOOLS and (os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TT_NO_REAL_WRITES")):
+            # tests (and anything that sets TT_NO_REAL_WRITES) can never write to the real house
+            raise PermissionError(f"{tool}: escritas reais bloqueadas durante testes")
         if tool not in READ_TOOLS | WRITE_TOOLS:
             raise ValueError(f"unknown MCP tool {tool}")
         with self._lock:

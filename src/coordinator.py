@@ -727,6 +727,11 @@ class Coordinator:
     def execute(self, state: HomeState, dev: DeviceState, body: dict) -> dict:
         with self._lock:
             mcp = None
+            if self.s.simulate and dev.source != "sim":
+                # SIMULATE=true: the simulated house reuses the real device ids, so a write must never
+                # leave for the MCP, whatever the device says its source is
+                dev = dev.model_copy(update={"source": "sim"})
+                state = state.model_copy(update={"devices": {**state.devices, dev.id: dev}})
             if not self.s.dry_run and dev.source == "mcp":
                 if self._mcp is None:
                     from .mcp_client import McpClient
