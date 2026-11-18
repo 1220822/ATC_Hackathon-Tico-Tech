@@ -160,6 +160,12 @@ class History:
         finally:
             db.close()
 
+    def release_writer(self, owner: str) -> None:
+        cur = self.writer()
+        if cur and cur.get("owner") == owner:
+            with closing(self._connect()) as db, db:
+                db.execute("DELETE FROM meta WHERE key = 'writer'")
+
     def writer(self) -> dict | None:
         raw = self.get_meta("writer")
         return json.loads(raw) if raw else None
@@ -328,6 +334,8 @@ class HistoryRecorder:
                          (self.history.writer() or {}).get("owner"))
             self.standby = True
             return 0
+        if self.standby:
+            log.info("passo a gravar o histórico (%s)", self.owner)
         self.standby = False
         self.last_ts = state.ts
         n = self.history.record(state)

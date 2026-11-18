@@ -26,6 +26,7 @@ from .agents.specs import AGENTS
 from .config import Settings
 from .memory import Decision, SharedMemory
 from .perception.state import DeviceState, Event, HomeState, _num, de, em, hue_rgb
+from .storage.decisions import decision_kind, map_status
 from .writes import UnknownDevice, guard_device, route_write
 
 log = logging.getLogger(__name__)
@@ -52,17 +53,42 @@ class RequestRefused(ValueError):
     pass
 
 
+AGENT_CATEGORY = {"Energia": "energia", "Conforto": "conforto", "Segurança": "seguranca"}
+
+
+def category_for(agent: str, dev: DeviceState | None) -> str:
+    """Autonomy category of an action: lights are "luz" (unless it is a security action), the rest
+    follows the agent that proposed it."""
+    if agent == "Emergência":
+        return "emergencia"
+    if agent == "Utilizador":
+        return "utilizador"
+    if dev is not None and dev.role == "light" and agent != "Segurança":
+        return "luz"
+    return AGENT_CATEGORY.get(agent, "energia")
+
+
+def trigger_dict(trigger: Event | dict | None) -> dict | None:
+    if trigger is None:
+        return None
+    if isinstance(trigger, Event):
+        return {"id": trigger.id, "type": trigger.type, "ts": trigger.ts, "room": trigger.room,
+                "room_name": trigger.room_name, "device_id": trigger.device_id, "message": trigger.message}
+    return dict(trigger)
+
+
 def _what(dev: DeviceState, action: str) -> str:
     return f"{'ligar' if action == 'on' else 'desligar'} {NOUN.get(dev.role, dev.name)} {de(dev.room_name)}".strip()
 
 
 class Coordinator:
     def __init__(self, memory: SharedMemory, settings: Settings, mcp=None, sim=None,
-                 arbiter: Callable[[str], Any] | None = None):
+                 arbiter: Callable[[str], Any] | None = None, decisions=None):
         """arbiter: prompt -> CoordinatorReply (the Coordinator LLM; set by AgentBridge.start()).
         Without it, agent proposals are never executed."""
         self.memory, self.s = memory, settings
         self.arbiter = arbiter
+        self.decisions = decisions  # src.storage.decisions.DecisionStore (None = not persisted)
         self._arb_lock = threading.Lock()
         self._mcp = mcp  # write-enabled McpClient, created only when a real write is due
         self._sim = sim
@@ -96,6 +122,26 @@ class Coordinator:
         with self._lock:
             self._approved.append((time.time(), device_id, value, source))
 
+    def _persist(self, *, status: str, explanation: str, dev: DeviceState | None = None,
+                 body: dict | None = None, trigger: Event | dict | None = None, proposals: list | None = None,
+                 autonomy: str | None = None, agent: str | None = None, decision: dict | None = None,
+                 room: str | None = None, room_name: str | None = None) -> dict | None:
+        """Record one outcome in the decisions table (data memory). Never raises."""
+        if self.decisions is None:
+            return None
+        trig = trigger_dict(trigger)
+        try:
+            return self.decisions.add(
+                trigger=trig, proposals=proposals, explanation=explanation, status=status, autonomy=autonomy,
+                decision=decision if decision is not None else ({"device_id": dev.id, **body} if dev and body else {}),
+                kind=decision_kind((trig or {}).get("type"), dev.id if dev else None, body),
+                category=category_for(agent or "", dev), agent=agent,
+                room=dev.room_id if dev else room, room_name=dev.room_name if dev else room_name,
+                device_id=dev.id if dev else None)
+        except Exception as e:  # noqa: BLE001 - the house must keep working without the database
+            log.warning("could not record decision: %s", e)
+            return None
+
     # -- 1. user requests ------------------------------------------------------
     def request(self, req: UserRequest) -> Decision:
         state = self.memory.state
@@ -108,6 +154,9 @@ class Coordinator:
             raise
         except RequestRefused as e:
             d = state.devices.get(req.device_id)
+            self._persist(status="vetoed", explanation=f"Pedido do utilizador recusado: {e}.", dev=d, body=body,
+                          trigger={"type": "user_request", "origin": req.origin}, agent="Utilizador",
+                          autonomy="utilizador")
             return self.memory.add_decision(Decision(
                 agent="Coordenador", message=f"Pedido do utilizador ({req.origin}) recusado: {e}.",
                 device_id=req.device_id, room=d.room_id if d else None, room_name=d.room_name if d else None,
@@ -115,6 +164,10 @@ class Coordinator:
         status, note = self._run(state, dev, body)
         if status != "erro":
             self._remember(dev.id, req.action, "Utilizador")
+        self._persist(status=map_status(status), explanation=f"Pedido do utilizador ({req.origin}): "
+                      f"{_what(dev, req.action)}. {note}", dev=dev, body=body,
+                      trigger={"type": "user_request", "origin": req.origin}, agent="Utilizador",
+                      autonomy="utilizador")
         return self.memory.add_decision(Decision(
             agent="Coordenador", message=f"Pedido do utilizador ({req.origin}): {_what(dev, req.action)}. {note}",
             device_id=dev.id, room=dev.room_id, room_name=dev.room_name, action=body, status=status))
@@ -223,29 +276,43 @@ class Coordinator:
                 body = {"type": "power", "value": p.acao}
                 what = _what(dev, p.acao)
                 v = verdicts.get(n)
+                trig = events[-1] if events else None
+                prop = [{"agent": agent, **p.model_dump()}]
                 if failure or v is None:
                     why = failure or "o Coordenador LLM não decidiu esta proposta"
-                    out.append(self.memory.add_decision(Decision(
+                    d = self.memory.add_decision(Decision(
                         **self._common(dev, body), status="erro" if failure else "rejeitada",
-                        message=f"Proposta {de(agent)} ({what}) não executada: {why}.")))
+                        message=f"Proposta {de(agent)} ({what}) não executada: {why}."))
+                    out.append(d)
+                    self._persist(status="rejected", explanation=d.message, dev=dev, body=body, trigger=trig,
+                                  agent=agent, proposals=prop)
                     continue
                 motivo = (v.motivo or "").strip().rstrip(".")
                 if not v.aprovar:
-                    out.append(self.memory.add_decision(Decision(
+                    d = self.memory.add_decision(Decision(
                         **self._common(dev, body), status="rejeitada",
-                        message=f"Recuso a proposta {de(agent)} ({what})" + (f": {motivo}." if motivo else "."))))
+                        message=f"Recuso a proposta {de(agent)} ({what})" + (f": {motivo}." if motivo else ".")))
+                    out.append(d)
+                    self._persist(status="rejected", explanation=d.message, dev=dev, body=body, trigger=trig,
+                                  agent=agent, proposals=prop)
                     continue
                 fresh = self.memory.state or state  # the house may have changed while the LLM thought
                 checked = self._precheck(agent, p, fresh)
                 if isinstance(checked, Decision):
                     out.append(checked)
+                    if checked.status == "rejeitada":
+                        self._persist(status="vetoed", explanation=checked.message, dev=dev, body=body,
+                                      trigger=trig, agent=agent, proposals=prop)
                     continue
                 status, note = self._run(fresh, checked, body)
                 if status != "erro":
                     self._remember(checked.id, p.acao, agent)
-                out.append(self.memory.add_decision(Decision(
+                d = self.memory.add_decision(Decision(
                     **self._common(checked, body), status=status,
-                    message=f"Aprovo a proposta {de(agent)}: {what}." + (f" {motivo}." if motivo else "") + f" {note}")))
+                    message=f"Aprovo a proposta {de(agent)}: {what}." + (f" {motivo}." if motivo else "") + f" {note}"))
+                out.append(d)
+                self._persist(status=map_status(status), explanation=d.message, dev=checked, body=body,
+                              trigger=trig, agent=agent, proposals=prop, autonomy="auto")
             return out
 
     # -- 3. fixed rules (deterministic, no LLM): smoke and intrusion -----------------
@@ -370,7 +437,7 @@ class Coordinator:
         if status == "informação":
             note = "Não havia nada para desligar."
         where = em(event.room_name) if event.room_name else "em casa"
-        return self.memory.add_decision(Decision(
+        return self._persist_fixed(event, "Emergência", Decision(
             agent="Emergência", status=status, device_id=event.device_id, room=event.room,
             room_name=event.room_name,
             action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
@@ -402,7 +469,7 @@ class Coordinator:
         self._check_lights_later()
         where = em(event.room_name) if event.room_name else "em casa"
         light = steps[0][0]
-        return self.memory.add_decision(Decision(
+        return self._persist_fixed(event, "Segurança", Decision(
             agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,
             action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
             message=f"Intrusão {where}: luz a vermelho no máximo (regra fixa, sem LLM). {note}"))
@@ -427,10 +494,19 @@ class Coordinator:
         status, note = self._run_steps(state, steps, "Segurança")
         self._check_lights_later()
         light = steps[0][0]
-        return self.memory.add_decision(Decision(
+        return self._persist_fixed({"type": "alarm_cancelled"}, "Segurança", Decision(
             agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,
             action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
             message=f"Alarme cancelado: luz reposta como estava antes da intrusão. {note}"))
+
+    def _persist_fixed(self, trigger, agent: str, decision: Decision) -> Decision:
+        """Fixed rules (no LLM, no preferences, no autonomy level): always executed."""
+        self.memory.add_decision(decision)
+        if decision.status != "informação":
+            self._persist(status=map_status(decision.status), explanation=decision.message, trigger=trigger,
+                          agent=agent, autonomy="emergencia", decision=decision.action or {},
+                          room=decision.room, room_name=decision.room_name)
+        return decision
 
     # -- the only write path ----------------------------------------------------
     def _run(self, state: HomeState, dev: DeviceState, body: dict) -> tuple[str, str]:

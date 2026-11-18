@@ -24,6 +24,7 @@ from ..config import VAR_DIR, get_settings
 from ..memory import EventBus, SharedMemory
 from ..perception.poller import Perception
 from ..perception.sources import make_source
+from .events import EventStore
 from .history import History, HistoryRecorder, import_legacy
 
 log = logging.getLogger("recorder")
@@ -61,12 +62,7 @@ def print_status(history: History) -> None:
     w = history.writer()
     if w:
         print(f"  gravador: {w['owner']} (última gravação há {time.time() - w['ts']:.0f} s)")
-    try:
-        from .events import EventStore
-        n = EventStore(history.path).count()
-        print(f"  eventos: {n}")
-    except Exception:  # noqa: BLE001 - events table may not exist yet
-        pass
+    print(f"  eventos: {EventStore(history.path).count()}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,16 +81,10 @@ def main(argv: list[str] | None = None) -> int:
     import_legacy(history, settings.legacy_history_db)
 
     bus, memory = EventBus(), SharedMemory()
-    event_store = None
-    try:
-        from .events import EventStore
-        event_store = EventStore(settings.history_db)
-        bus.subscribe(event_store.on_event)
-    except ImportError:
-        pass
+    recorder = HistoryRecorder(memory, history, settings.store_interval_s, owner=f"recorder:{os.getpid()}")
+    bus.subscribe(EventStore(settings.history_db, is_writer=lambda: not recorder.standby).on_event)
     bus.subscribe(lambda e: log.info("evento %s: %s", e.type, e.message))
     perception = Perception(make_source(settings), bus, memory, settings)
-    recorder = HistoryRecorder(memory, history, settings.store_interval_s, owner=f"recorder:{os.getpid()}")
     log.info("gravador: fonte=%s, perceção a cada %.0f s, leituras a cada %.0f s em %s",
              perception.source.name, settings.poll_interval_s, settings.store_interval_s, history.path)
 
@@ -137,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             stop.wait(delay)
         except KeyboardInterrupt:
             break
+    history.release_writer(recorder.owner)
     if a.once:
         print_status(history)
     log.info("gravador parado")

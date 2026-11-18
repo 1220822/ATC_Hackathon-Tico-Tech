@@ -40,6 +40,8 @@ from .config import Settings, get_settings
 from .coordinator import Coordinator, RequestRefused, UserRequest
 from .memory import SharedMemory
 from .perception.state import HomeState, RoomState, _num
+from .storage.decisions import DecisionStore
+from .storage.events import EventStore
 from .storage.history import History
 from .storage.tools import HistoryTools
 from .twin.layout import LayoutError
@@ -224,6 +226,17 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
     def agents_status():
         return memory.agent_status()
 
+    events_db = EventStore(settings.history_db)
+    decisions_db = coordinator.decisions or DecisionStore(settings.history_db)
+
+    @app.get("/events")
+    def list_events(n: int = Query(50, ge=1, le=500), divisao: str | None = None, since: float | None = None):
+        return events_db.recent(n, room=room_id(divisao) if divisao else None, since=since)
+
+    @app.get("/decisions")
+    def list_decisions(n: int = Query(50, ge=1, le=500), status: str | None = None):
+        return decisions_db.recent(n, status=status)
+
     @app.post("/coordinator/request")
     def coordinator_request(req: UserRequest):
         """Simple actions from the UI. Never writes directly: the Coordinator guards it and,
@@ -266,7 +279,10 @@ def main() -> None:
     settings = get_settings()
     import_legacy(History(settings.history_db), settings.legacy_history_db)
     memory, bus = SharedMemory(), EventBus()
-    coordinator = Coordinator(memory, settings)
+    recorder = HistoryRecorder(memory, History(settings.history_db), settings.store_interval_s)
+    # every bus event goes to the events table (only while this process holds the writer lease)
+    bus.subscribe(EventStore(settings.history_db, is_writer=lambda: not recorder.standby).on_event)
+    coordinator = Coordinator(memory, settings, decisions=DecisionStore(settings.history_db))
     # fixed rules, straight from the bus, never through an LLM: smoke and intrusion
     bus.subscribe(coordinator.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
     vision_worker = None
@@ -297,7 +313,6 @@ def main() -> None:
     except Exception as e:  # the loop retries with backoff; the API answers 503 meanwhile
         log.warning("first poll failed: %s", e)
     perception.start_thread()
-    recorder = HistoryRecorder(memory, History(settings.history_db), settings.store_interval_s)
     recorder.step()
     recorder.start_thread()
     print(f"UI: http://{a.host}:{a.port}/   ·   3D: http://{a.host}:{a.port}/twin   ·   "
