@@ -65,6 +65,14 @@ class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
 
 
+class KnowledgeEditIn(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+
+
+class KnowledgeEraseIn(BaseModel):
+    confirm: str = ""
+
+
 class ChatActionIn(BaseModel):
     action: str = Field(min_length=1, max_length=40)
     id: str | None = Field(None, max_length=64)
@@ -278,6 +286,38 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
     @app.post("/chat/action")
     def chat_action(a: ChatActionIn):
         return {"messages": need_chat().action(a.action, a.id, a.response, a.comment)}
+
+    # -- "O que a casa sabe de ti" (transparency and control, RGPD) ------------------------------
+    def knowledge():
+        from .knowledge import Knowledge
+        c = need_chat()
+        return Knowledge(coordinator.memories, coordinator, chat=c, insights=c.insights)
+
+    @app.get("/knowledge")
+    def knowledge_view():
+        return knowledge().view(memory.state)
+
+    @app.post("/knowledge/prefs/{pid}/edit")
+    def knowledge_edit(pid: str, body: KnowledgeEditIn):
+        from .knowledge import KnowledgeError
+        try:
+            return knowledge().edit(pid, body.text)
+        except (KnowledgeError, ValueError) as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/knowledge/prefs/{pid}/revoke")
+    def knowledge_revoke(pid: str):
+        from .knowledge import KnowledgeError
+        try:
+            return knowledge().revoke(pid)
+        except KnowledgeError as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.post("/knowledge/erase")
+    def knowledge_erase(body: KnowledgeEraseIn):
+        if body.confirm != "APAGAR":
+            raise HTTPException(400, "Escreve APAGAR para confirmar.")
+        return knowledge().erase_all()
 
     @app.get("/insights")
     def insights_list():
