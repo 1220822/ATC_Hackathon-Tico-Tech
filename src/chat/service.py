@@ -182,6 +182,10 @@ class ChatService:
         if intent.intent == "configurar_layout":
             if self.layout is None:
                 return [self.say("O ajuste do 3D ainda não está disponível.")]
+            if intent.abertura is not None:  # a window / door of the floor plan
+                if intent.abertura.divisao is None:
+                    intent.abertura.divisao = intent.divisao
+                return self.layout.from_chat(intent.abertura, text, self)
             return self.layout.from_chat(intent.layout, text, self)
         if intent.intent == "responder_proposta" and intent.sempre:
             return self._always(pending_dec)

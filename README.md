@@ -44,6 +44,9 @@ Guião da demo: [docs/demo.md](docs/demo.md).
   (≥ `INSIGHT_MIN_DAYS` dias). O LLM só redige a frase e a frase é verificada contra a evidência. No
   máximo 2 por dia. **Porquê?** desenha o histórico que originou a sugestão.
 - "O que a casa sabe de ti": ver, editar, revogar e apagar tudo (`/knowledge`).
+- Janelas e portas da planta, pelo chat: "acrescenta uma janela na parede da direita do quarto",
+  "a janela da sala tem 1,5 m de largura", "passa a janela do quarto para a parede da esquerda",
+  "remove a janela do quarto". Sem sobreposições, cabem na parede, e o sensor da janela vai com ela.
 - 3D: "o quarto fica à direita da sala" ou o modo **Ajustar 3D** (arrastar, gravar, desfazer). As
   alterações ficam em `var/layout_user.json`; o `config/layout.json` continua a ser a base versionada.
 

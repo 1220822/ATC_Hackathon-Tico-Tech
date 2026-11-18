@@ -61,6 +61,25 @@ class LayoutRequest(BaseModel):
     referencia: str | None = Field(None, description="divisão ou dispositivo de referência")
 
 
+Wall = Literal["tras", "frente", "esquerda", "direita"]
+
+
+class OpeningRequest(BaseModel):
+    """A window (or door) of the floor plan: add, change or remove it (3D only, never the MCP)."""
+    acao: Literal["adicionar", "alterar", "remover"]
+    tipo: Literal["janela", "porta"] = "janela"
+    divisao: str | None = None
+    parede: Wall | None = Field(None, description="parede onde fica (ou onde está, ao alterar/remover)")
+    para_parede: Wall | None = Field(None, description="ao alterar: parede para onde passa")
+    posicao: Literal["inicio", "centro", "fim"] | None = Field(
+        None, description="ao longo da parede: inicio = esquerda/fundo, fim = direita/frente")
+    largura_m: float | None = Field(None, gt=0.2, le=6)
+    altura_m: float | None = Field(None, gt=0.2, le=3)
+    peitoril_m: float | None = Field(None, ge=0, le=2)
+    delta_largura_m: float | None = Field(None, ge=-3, le=3, description="mais larga (+) / mais estreita (-)")
+    delta_altura_m: float | None = Field(None, ge=-2, le=2)
+
+
 class CommandRequest(BaseModel):
     dispositivo: Literal["luz", "aquecedor", "seguranca"]
     divisao: str | None = None
@@ -75,6 +94,7 @@ class ChatIntent(BaseModel):
     preferencia: PrefRequest | None = None
     regra: RuleRequest | None = None
     layout: LayoutRequest | None = None
+    abertura: OpeningRequest | None = None
     comando: CommandRequest | None = None
     resposta: Literal["aprovar", "rejeitar", "alterar", "silenciar"] | None = None
     sempre: bool = Field(False, description="«faz sempre assim»: passa a fazer esta decisão sozinha")
@@ -92,7 +112,10 @@ Classifica a mensagem do utilizador numa intenção e extrai os campos. Intenç�
   horas de silêncio (quiet_hours), nota livre.
 - criar_regra: "se ... então/avisa-me/liga/desliga ..." (condições com sensores e ações).
 - configurar_layout: onde ficam divisões ou dispositivos no 3D ("o quarto fica à direita da sala",
-  "o sensor de temperatura está junto à janela").
+  "o sensor de temperatura está junto à janela"). Também janelas e portas da planta: acrescentar,
+  mudar (parede, posição ao longo da parede, largura, altura) ou remover -> preenche "abertura"
+  ("acrescenta uma janela na parede da direita do quarto", "a janela da sala tem 1,5 m de largura",
+  "passa a janela do quarto para a parede da esquerda", "remove a janela do quarto").
 - responder_proposta: aprova, rejeita ou altera uma proposta pendente ("sim, desliga", "não").
 - responder_sugestao: responde a uma sugestão ("aceito", "não voltes a sugerir isto" -> resposta silenciar).
 - comando_dispositivo: ordem direta ("liga a luz do quarto", "arma a casa").
@@ -248,6 +271,89 @@ def extract_pref(text: str, rooms: list[str]) -> PrefRequest | None:
     return None
 
 
+_WALL_WORDS = ((r"tras|fundo|norte", "tras"), (r"frente|sul", "frente"), (r"esquerd|oeste", "esquerda"),
+               (r"direit|este\b|leste", "direita"))
+
+
+def _wall_of(word: str) -> str | None:
+    for pat, wall in _WALL_WORDS:
+        if re.match(pat, word):
+            return wall
+    return None
+
+
+def _metres(num: str, unit: str | None) -> float:
+    v = _num(num)
+    return v / 100 if unit and unit.startswith("c") else v
+
+
+def extract_opening(text: str, rooms: list[str]) -> OpeningRequest | None:
+    """«acrescenta uma janela na parede da direita do quarto», «a janela da sala tem 1,5 m de largura»,
+    «passa a janela do quarto para a parede da esquerda», «remove a janela do quarto»."""
+    t = norm(text)
+    m = re.search(r"\b(janelas?|portas?)\b", t)
+    if not m:
+        return None
+    tipo = "porta" if m.group(1).startswith("porta") else "janela"
+    if re.search(r"\b(acrescent|adicion|poe|coloca|cria|mete|instala|quero|falta|ha|tem|existe)\w*\b.*\b(uma|outra|nova) (janela|porta)", t):
+        acao = "adicionar"
+    elif re.search(r"\b(remove|tira|apaga|elimina|retira)\w*", t) or re.search(r"nao (ha|tem|existe) (nenhuma )?(janela|porta)", t):
+        acao = "remover"
+    elif re.search(r"\b(maior|menor|mais (larga|estreita|alta|baixa|comprida|curta)|largura|altura|peitoril|muda|move|passa|"
+                   r"desloca|aumenta|diminui|alarga|estreita|encolhe)\w*\b|\d\s*(m|cm|metros?)\b", t):
+        acao = "alterar"
+    else:
+        return None
+    req: dict = {"acao": acao, "tipo": tipo, "divisao": find_room(text, rooms)}
+    rest = t
+    to = re.search(r"para (?:a )?parede (?:da |de |do )?(\w+)", rest)
+    if to:
+        req["para_parede"] = _wall_of(to.group(1))
+        rest = rest.replace(to.group(0), " ")
+    at = re.search(r"parede (?:da |de |do )?(\w+)", rest)
+    if at:
+        req["parede"] = _wall_of(at.group(1))
+        rest = rest.replace(at.group(0), " ")
+    elif acao != "alterar":  # «uma janela à direita no quarto»: the side is the wall
+        side = re.search(r"\b(?:do lado|no lado|a|ao) (direit|esquerd|frente|fundo|tras)\w*", rest)
+        if side:
+            req["parede"] = _wall_of(side.group(1))
+            rest = rest.replace(side.group(0), " ")
+    if re.search(r"\b(ao centro|no centro|no meio|a meio)\b", rest):
+        req["posicao"] = "centro"
+    elif re.search(r"\b(a|ao canto|para a|mais a) (esquerda|tras)\b|\bao fundo\b|canto esquerdo", rest):
+        req["posicao"] = "inicio"
+    elif re.search(r"\b(a|ao canto|para a|mais a) (direita|frente)\b|canto direito", rest):
+        req["posicao"] = "fim"
+    w = (re.search(r"(\d+(?:[.,]\d+)?)\s*(m|metros?|cm)?\s*(?:de )?(?:largura|de largo)", t)
+         or re.search(r"largura (?:de |para )?(\d+(?:[.,]\d+)?)\s*(m|metros?|cm)?", t))
+    h = (re.search(r"(\d+(?:[.,]\d+)?)\s*(m|metros?|cm)?\s*(?:de )?(?:altura|de alto)", t)
+         or re.search(r"altura (?:de |para )?(\d+(?:[.,]\d+)?)\s*(m|metros?|cm)?", t))
+    s = re.search(r"peitoril (?:de |a |para )?(\d+(?:[.,]\d+)?)\s*(m|metros?|cm)?", t)
+    if w:
+        req["largura_m"] = _metres(w.group(1), w.group(2))
+    if h:
+        req["altura_m"] = _metres(h.group(1), h.group(2))
+    if s:
+        req["peitoril_m"] = _metres(s.group(1), s.group(2))
+    if not w and not h:
+        plain = re.search(r"\b(?:com|tem|de|para) (\d+(?:[.,]\d+)?)\s*(m|metros?|cm)\b", t)
+        if plain:
+            req["largura_m"] = _metres(plain.group(1), plain.group(2))
+    if re.search(r"\b(maior|mais larga|mais comprida|alarga|aumenta)\w*", t) and "largura_m" not in req:
+        req["delta_largura_m"] = 0.3
+    if re.search(r"\b(menor|mais estreita|mais curta|estreita|encolhe|diminui)\w*", t) and "largura_m" not in req:
+        req["delta_largura_m"] = -0.3
+    if re.search(r"mais alta", t) and "altura_m" not in req:
+        req["delta_altura_m"] = 0.2
+    if re.search(r"mais baixa", t) and "altura_m" not in req:
+        req["delta_altura_m"] = -0.2
+    try:
+        return OpeningRequest(**req)
+    except ValueError:
+        return None
+
+
 def extract_layout(text: str, rooms: list[str]) -> LayoutRequest | None:
     t = norm(text)
     rel = None
@@ -333,6 +439,9 @@ def classify_rules(text: str, rooms: list[str], pending_decision: bool = False,
     if re.match(r"^(se|quando|sempre que|quero que (se|quando))\b", t) and re.search(
             r"avisa|notifica|liga|desliga|acende|apaga|alerta|luz|aquecedor", t):
         return ChatIntent(intent="criar_regra", divisao=room, regra=extract_rule(text, rooms))
+    op = extract_opening(text, rooms) if not t.endswith("?") else None
+    if op is not None:
+        return ChatIntent(intent="configurar_layout", divisao=room, abertura=op)
     lay = extract_layout(text, rooms)
     if lay is not None and not t.endswith("?"):
         return ChatIntent(intent="configurar_layout", divisao=room, layout=lay)
@@ -371,9 +480,11 @@ def classify(text: str, llm, rooms: list[str], pending_decision: bool = False,
     got.origem = "llm"
     # fields the rules extracted reliably fill what the LLM left out
     if got.intent == rules.intent:
-        for f in ("divisao", "topico", "periodo", "preferencia", "regra", "layout", "comando", "resposta"):
+        for f in ("divisao", "topico", "periodo", "preferencia", "regra", "layout", "abertura", "comando", "resposta"):
             if getattr(got, f) is None and getattr(rules, f) is not None:
                 setattr(got, f, getattr(rules, f))
+        if got.abertura is not None and got.abertura.divisao is None:
+            got.abertura.divisao = got.divisao
         if got.intent == "criar_regra" and got.regra is not None and not got.regra.condicoes and rules.regra:
             got.regra = rules.regra
     elif got.intent == "outro" and rules.intent != "outro":

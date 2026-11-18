@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from ..perception.state import HomeState, de, em
+from ..perception.state import HomeState, de, em, fmt
 from .layout import DeviceLayout, Layout, LayoutError, Opening, RoomLayout, load_layout
 
 ROLE_WORDS = {"sensor de temperatura": "temperature", "luz": "light", "aquecedor": "plug", "câmara": "camera",
@@ -24,6 +24,54 @@ REL_PT = {"direita": "à direita", "esquerda": "à esquerda", "frente": "à fren
           "ao_lado": "ao lado", "junto_janela": "junto à janela", "junto_porta": "junto à porta",
           "centro": "no centro", "canto": "no canto"}
 WALL_GAP = 0.12
+SIDE_OF = {"tras": "north", "frente": "south", "esquerda": "west", "direita": "east"}
+SIDE_PT = {"north": "de trás", "south": "da frente", "west": "da esquerda", "east": "da direita"}
+OPENING_DEFAULTS = {"window": {"width": 1.2, "height": 1.2, "sill": 0.9}, "door": {"width": 0.9, "height": 2.1, "sill": 0.0}}
+OPENING_GAP = 0.1  # between two openings, and from the corners
+
+
+def _wall_len(room: dict, side: str) -> float:
+    return room["width"] if side in ("north", "south") else room["depth"]
+
+
+def _wall(room: dict, side: str) -> dict:
+    for w in room["walls"]:
+        if w["side"] == side:
+            return w
+    w = {"side": side, "openings": []}
+    room["walls"].append(w)
+    return w
+
+
+def _fits(room: dict, side: str, offset: float, width: float, exclude: str | None = None) -> bool:
+    length = _wall_len(room, side)
+    if offset - width / 2 < OPENING_GAP - 1e-6 or offset + width / 2 > length - OPENING_GAP + 1e-6:
+        return False
+    for w in room["walls"]:
+        if w["side"] != side:
+            continue
+        for o in w["openings"]:
+            if o["id"] != exclude and offset - width / 2 < o["offset"] + o["width"] / 2 + OPENING_GAP \
+                    and o["offset"] - o["width"] / 2 - OPENING_GAP < offset + width / 2:
+                return False
+    return True
+
+
+def _place(room: dict, side: str, width: float, posicao: str | None, keep: float | None = None,
+           exclude: str | None = None) -> float | None:
+    """Offset (centre along the wall) closest to where it was asked for that does not collide."""
+    length = _wall_len(room, side)
+    lo, hi = width / 2 + OPENING_GAP, length - width / 2 - OPENING_GAP
+    if hi < lo:
+        return None
+    want = {"inicio": lo + 0.2, "centro": length / 2, "fim": hi - 0.2}.get(posicao or "", keep if keep is not None else length / 2)
+    want = min(max(want, lo), hi)
+    step = 0.05
+    for k in range(int(length / step) + 2):
+        for cand in (want - k * step, want + k * step):
+            if lo - 1e-6 <= cand <= hi + 1e-6 and _fits(room, side, round(cand, 2), width, exclude):
+                return round(cand, 2)
+    return None
 
 
 class LayoutProblem(ValueError):
@@ -175,6 +223,122 @@ class LayoutEditor:
         return Layout.model_validate(data), \
             f"Pus {NOUN_PT.get(dev.role, dev.name)} {REL_PT.get(rel, rel)} {em(dev.room_name)}.{extra}"
 
+    # -- windows and doors of the floor plan ------------------------------------------------------
+    def edit_opening(self, req, state: HomeState) -> tuple[Layout, Layout, str]:
+        """OpeningRequest (adicionar / alterar / remover a janela ou porta) -> (before, after, description).
+        Openings are drawn only (3D); the contact sensor that watches a window follows it."""
+        before = self.current()
+        data = before.model_dump()
+        otype = "window" if req.tipo == "janela" else "door"
+        noun = req.tipo  # janela | porta
+        room_st = state.room(req.divisao) if req.divisao else None
+        if room_st is None:
+            pool = [r for r in state.rooms.values() if r.id in data["rooms"]]
+            if req.acao != "adicionar":
+                pool = [r for r in pool if any(o["type"] == otype for w in data["rooms"][r.id]["walls"] for o in w["openings"])]
+            if len(pool) != 1:
+                raise LayoutProblem(f"diz-me em que divisão (ex.: «{'acrescenta uma' if req.acao == 'adicionar' else 'a'} "
+                                    f"{noun} {'no quarto' if req.acao == 'adicionar' else 'do quarto'}»)")
+            room_st = pool[0]
+        room = data["rooms"].get(room_st.id)
+        if room is None:
+            raise LayoutProblem(f"{room_st.name} ainda não está no 3D")
+        where = de(room_st.name)
+        d = OPENING_DEFAULTS[otype]
+
+        if req.acao == "adicionar":
+            width = req.largura_m or d["width"]
+            sill = d["sill"] if otype == "door" else (req.peitoril_m if req.peitoril_m is not None else d["sill"])
+            height = min(req.altura_m or d["height"], room["height"] - sill - 0.05)
+            sides = [SIDE_OF[req.parede]] if req.parede else ["north", "east", "west", "south"]
+            for side in sides:
+                offset = _place(room, side, width, req.posicao)
+                if offset is not None:
+                    break
+            else:
+                raise LayoutProblem(f"não cabe uma {noun} de {fmt(width)} m na parede {SIDE_PT[sides[0]]} {where}"
+                                    if req.parede else f"não há espaço livre nas paredes {where}")
+            base = f"{noun}-{re.sub(r'[^a-z0-9]+', '-', room_st.name.casefold()).strip('-')}"
+            ids = {o["id"] for r in data["rooms"].values() for w in r["walls"] for o in w["openings"]}
+            oid, n = base, 2
+            while oid in ids:
+                oid, n = f"{base}-{n}", n + 1
+            _wall(room, side)["openings"].append({"id": oid, "type": otype, "offset": offset, "width": width,
+                                                  "height": round(height, 2), "sill": sill})
+            what = f"Acrescentei uma {noun} de {fmt(width)} m na parede {SIDE_PT[side]} {where}."
+            return before, self._validated(data), what
+
+        found = [(w, o) for w in room["walls"] for o in w["openings"] if o["type"] == otype]
+        if req.parede:
+            found = [(w, o) for w, o in found if w["side"] == SIDE_OF[req.parede]] or found
+        if not found:
+            raise LayoutProblem(f"{room_st.name} não tem nenhuma {noun} no 3D"
+                                + (f"; diz «acrescenta uma {noun} {em(room_st.name)}»" if req.acao == "alterar" else ""))
+        wall, o = found[0]
+        watchers = [dev_id for dev_id, dl in data["devices"].items() if dl.get("opening") == o["id"]]
+
+        if req.acao == "remover":
+            if watchers:
+                names = ", ".join(data["devices"][i].get("name") or i for i in watchers)
+                raise LayoutProblem(f"o sensor ({names}) está nessa {noun}; diz-me primeiro para onde a mudar")
+            wall["openings"].remove(o)
+            what = f"Removi a {noun} da parede {SIDE_PT[wall['side']]} {where}."
+            return before, self._validated(data), what
+
+        # alterar: size, wall, position along the wall
+        width = req.largura_m or round(o["width"] + (req.delta_largura_m or 0), 2)
+        height = req.altura_m or round(o["height"] + (req.delta_altura_m or 0), 2)
+        sill = o["sill"] if otype == "door" else (req.peitoril_m if req.peitoril_m is not None else o["sill"])
+        if width < 0.3 or height < 0.3:
+            raise LayoutProblem(f"a {noun} ficaria demasiado pequena")
+        if sill + height > room["height"] - 0.02:
+            raise LayoutProblem(f"a {noun} ficaria mais alta do que a parede ({fmt(room['height'])} m)")
+        new_side = SIDE_OF[req.para_parede] if req.para_parede else wall["side"]
+        wall["openings"].remove(o)
+        keep = o["offset"] if new_side == wall["side"] else None
+        offset = _place(room, new_side, width, req.posicao, keep=keep, exclude=o["id"])
+        if offset is None:
+            raise LayoutProblem(f"uma {noun} de {fmt(width)} m não cabe na parede {SIDE_PT[new_side]} {where}")
+        o.update(offset=offset, width=width, height=height, sill=sill)
+        _wall(room, new_side)["openings"].append(o)
+        for dev_id in watchers:  # the window's sensor moves with it
+            self._stick_to_opening(data["devices"][dev_id], room, new_side, o)
+        changes = []
+        if new_side != wall["side"]:
+            changes.append(f"passou para a parede {SIDE_PT[new_side]}")
+        elif req.posicao:
+            changes.append({"inicio": "mais para o início da parede", "centro": "ao centro da parede",
+                            "fim": "mais para o fim da parede"}[req.posicao])
+        if req.largura_m or req.delta_largura_m:
+            changes.append(f"{fmt(width)} m de largura")
+        if req.altura_m or req.delta_altura_m:
+            changes.append(f"{fmt(height)} m de altura")
+        if req.peitoril_m is not None and otype == "window":
+            changes.append(f"peitoril a {fmt(sill)} m")
+        what = f"Mudei a {noun} {where}: " + (", ".join(changes) or "sem alterações") + "."
+        if watchers:
+            what += " O sensor da janela foi com ela."
+        return before, self._validated(data), what
+
+    @staticmethod
+    def _stick_to_opening(dev: dict, room: dict, side: str, o: dict) -> None:
+        length = _wall_len(room, side)
+        along = o["offset"] + o["width"] / 2 + 0.08
+        if along > length - 0.1:
+            along = o["offset"] - o["width"] / 2 - 0.08
+        y = o.get("sill", 0) + o["height"] / 2
+        x, z = {"north": (along, WALL_GAP), "south": (along, room["depth"] - WALL_GAP),
+                "west": (WALL_GAP, along), "east": (room["width"] - WALL_GAP, along)}[side]
+        dev["position"] = [round(x, 2), round(y, 2), round(z, 2)]
+        dev["rotation_y"] = {"north": 0.0, "south": 180.0, "west": 90.0, "east": -90.0}[side]
+
+    @staticmethod
+    def _validated(data: dict) -> Layout:
+        try:
+            return Layout.model_validate(data)
+        except ValidationError as e:
+            raise LayoutProblem(f"o resultado não é válido ({e.errors()[0]['msg']})") from None
+
     # -- chat -----------------------------------------------------------------------------------
     def _ask_ok(self, chat, text: str, pref_id: str) -> dict:
         import time
@@ -190,11 +354,18 @@ class LayoutEditor:
         state = self.memory.state
         if req is None:
             return [chat.say("Não percebi a mudança. Exemplos: «o quarto fica à direita da sala», «o sensor de "
-                             "temperatura está junto à janela».")]
+                             "temperatura está junto à janela», «acrescenta uma janela na parede da direita do quarto».")]
+        opening = getattr(req, "acao", None) in ("adicionar", "alterar", "remover")  # a window / door
         try:
-            before, after, what = self.apply(req, state)
+            if opening:
+                before, after, what = self.edit_opening(req, state)
+            else:
+                before, after, what = self.apply(req, state)
             row = self._save(after, before, what, req.model_dump(), text)
         except (LayoutProblem, LayoutError) as e:
+            if opening:
+                return [chat.say(f"Não consegui mudar a {req.tipo}: {e}. Podes dizer-me de outra forma "
+                                 "(ex.: outra parede, ou uma largura mais pequena).")]
             return [chat.say(f"Não consegui mudar o 3D: {e}. Queres ajustar à mão?",
                              buttons=[{"label": "Ajustar à mão", "action": "layout_manual"}])]
         return [self._ask_ok(chat, what, row["id"])]

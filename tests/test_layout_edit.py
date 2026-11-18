@@ -84,6 +84,69 @@ class TestNaturalLanguage(LayoutCase):
         self.assertEqual(quarto["z"], self.room(SALA).depth)
 
 
+class TestWindows(LayoutCase):
+    CONTACT = "20d98aec-c266-4707-bd27-d06bb51733b7"
+
+    def openings(self, rid, kind="window"):
+        return [(w.side, o) for w in self.room(rid).walls for o in w.openings if o.type == kind]
+
+    def test_add_window_on_a_wall_by_chat(self):
+        msgs = self.chat.handle("Acrescenta uma janela na parede da direita do quarto")
+        self.assertIn("Acrescentei uma janela de 1,2 m na parede da direita do Quarto", msgs[-1]["text"])
+        self.assertIn("Ficou bem?", msgs[-1]["text"])
+        [(side, o)] = self.openings(QUARTO)
+        self.assertEqual(side, "east")
+        self.assertEqual((o.width, o.sill), (1.2, 0.9))
+        self.assertEqual(len(self.mem.prefs.history("layout")), 1)  # in the layout history
+
+    def test_second_window_does_not_overlap(self):
+        self.chat.handle("Acrescenta uma janela na parede de trás do quarto")
+        self.chat.handle("Acrescenta outra janela na parede de trás do quarto")
+        ws = [o for _, o in self.openings(QUARTO)]
+        self.assertEqual(len(ws), 2)
+        a, b = sorted(ws, key=lambda o: o.offset)
+        self.assertGreaterEqual(b.offset - b.width / 2, a.offset + a.width / 2)
+        self.assertNotEqual(a.id, b.id)
+
+    def test_resize_and_move_window_sensor_follows(self):
+        self.chat.handle("A janela da sala tem 1,6 m de largura")
+        [(_, o)] = self.openings(SALA)
+        self.assertEqual(o.width, 1.6)
+        msgs = self.chat.handle("Passa a janela da sala para a parede da esquerda")
+        self.assertIn("passou para a parede da esquerda", msgs[-1]["text"])
+        self.assertIn("O sensor da janela foi com ela", msgs[-1]["text"])
+        [(side, o)] = self.openings(SALA)
+        self.assertEqual(side, "west")
+        sensor = self.ed.current().devices[self.CONTACT]
+        self.assertEqual(sensor.opening, o.id)
+        self.assertLess(sensor.position[0], 0.2)  # now on the west wall
+
+    def test_window_with_sensor_cannot_be_removed(self):
+        msgs = self.chat.handle("Remove a janela da sala")
+        self.assertIn("Não consegui mudar a janela", msgs[-1]["text"])
+        self.assertEqual(len(self.openings(SALA)), 1)
+
+    def test_add_then_remove_and_undo(self):
+        self.chat.handle("Acrescenta uma janela no quarto")
+        self.assertEqual(len(self.openings(QUARTO)), 1)
+        self.chat.handle("Remove a janela do quarto")
+        self.assertEqual(self.openings(QUARTO), [])
+        self.ed.undo()
+        self.assertEqual(len(self.openings(QUARTO)), 1)
+
+    def test_too_wide_is_refused(self):
+        msgs = self.chat.handle("A janela da sala tem 6 m de largura")
+        self.assertIn("não cabe", msgs[-1]["text"])
+
+    def test_doors_too(self):
+        before = len(self.openings(QUARTO, "door"))  # the Quarto already has its front door
+        self.chat.handle("Quero uma porta nova na parede de trás do quarto")
+        doors = self.openings(QUARTO, "door")
+        self.assertEqual(len(doors), before + 1)
+        [(side, o)] = [d for d in doors if d[0] == "north"]
+        self.assertEqual((o.sill, o.height), (0.0, 2.1))
+
+
 class TestManualAndUndo(LayoutCase):
     def test_manual_then_undo(self):
         orig = self.room(QUARTO)
