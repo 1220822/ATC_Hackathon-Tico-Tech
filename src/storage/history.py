@@ -1,4 +1,5 @@
-"""History of numeric readings in SQLite (stdlib sqlite3, file var/history.db).
+"""History of numeric readings in SQLite (stdlib sqlite3, file var/history.db;
+var/history_sim.db when SIMULATE=true, because simulated Sala/Quarto reuse the real room ids).
 
     readings(ts REAL, room TEXT, device_id TEXT, metric TEXT, value REAL)
     index (room, metric, ts)

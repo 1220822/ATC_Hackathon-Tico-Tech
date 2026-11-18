@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Casa por divisões</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #677085; --line: #e3e6ec;
+    --ok: #1f9d55; --bad: #d64545; --warn: #c27c0e; --tag: #eef1ff; --tag-text: #3b4fc4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171d; --card: #1d212a; --text: #e6e9ef; --muted: #98a1b3; --line: #2d3340;
+            --ok: #3ccf7f; --bad: #ff6b6b; --warn: #f0b44c; --tag: #2a3060; --tag-text: #b9c3ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; max-width: 1100px;
+           margin: 0 auto 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  #erro { display: none; max-width: 1100px; margin: 0 auto 12px; padding: 8px 12px; border-radius: 8px;
+          background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  #grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          max-width: 1100px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .head h2 { font-size: 17px; margin: 0; flex: 1; }
+  .tag { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+         background: var(--tag); color: var(--tag-text); padding: 2px 7px; border-radius: 99px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--bad); }
+  .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 10px; }
+  dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .alert { color: var(--warn); font-weight: 600; }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px;
+            border: 1px solid var(--line); margin-right: 4px; }
+  ul { list-style: none; padding: 8px 0 0; margin: 0; border-top: 1px solid var(--line); font-size: 13px; }
+  li { display: flex; align-items: center; gap: 6px; padding: 2px 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Casa por divisões</h1>
+  <span class="meta" id="energia"></span>
+  <span class="meta" id="hora"></span>
+</header>
+<div id="erro"></div>
+<main id="grid"></main>
+<script>
+const nf1 = new Intl.NumberFormat("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const nf0 = new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 });
+const nf3 = new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 3 });
+
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k === "class" ? e.className = v : e.setAttribute(k, v);
+  for (const c of children) if (c != null) e.append(c);  // strings become text nodes (no HTML)
+  return e;
+}
+
+function rows(s, setpoint) {
+  const out = [];
+  if ("temperatura_c" in s) {
+    let t = s.temperatura_c == null ? "—" : nf1.format(s.temperatura_c) + " °C";
+    if (setpoint != null) t += `  (alvo ${nf1.format(setpoint)} °C)`;
+    out.push(["Temperatura", t]);
+    out.push(["Humidade", s.humidade_pct == null ? "—" : nf0.format(s.humidade_pct) + " %"]);
+  }
+  if ("janela_aberta" in s)
+    out.push(["Janela", s.janela_aberta ? el("span", { class: "alert" }, "Aberta") : "Fechada"]);
+  if ("aquecedor_ligado" in s)
+    out.push(["Aquecedor", (s.aquecedor_ligado ? "Ligado" : "Desligado") +
+      (s.aquecedor_potencia_w != null ? ` · ${nf0.format(s.aquecedor_potencia_w)} W` : "")]);
+  if (s.luz) {
+    const c = s.luz.cor ? `rgb(${s.luz.cor.join(",")})` : "transparent";
+    out.push(["Luz", el("span", {}, el("span", { class: "swatch", style: `background:${c}` }),
+      s.luz.power === "on" ? `Ligada · ${s.luz.brilho ?? "—"} %` : "Desligada")]);
+  }
+  return out;
+}
+
+function card(r) {
+  const offline = r.offline.length;
+  const status = el("span", { class: "status" }, el("span", { class: "dot " + (offline ? "off" : "on") }),
+    offline ? `${offline} offline` : "online");
+  const dl = el("dl");
+  for (const [k, v] of rows(r.sensores, r.setpoint_c)) dl.append(el("dt", {}, k), el("dd", {}, v));
+  const ul = el("ul");
+  for (const d of r.dispositivos)
+    ul.append(el("li", { title: d.online ? "online" : "offline" },
+      el("span", { class: "dot " + (d.online ? "on" : "off") }), d.nome));
+  return el("section", { class: "card" },
+    el("div", { class: "head" }, el("h2", {}, r.nome), r.simulado ? el("span", { class: "tag" }, "simulado") : null, status),
+    dl, ul);
+}
+
+async function refresh() {
+  const erro = document.getElementById("erro");
+  try {
+    const [rooms, energy] = await Promise.all(["/rooms", "/home/energy"].map(async u => {
+      const res = await fetch(u);
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      return res.json();
+    }));
+    document.getElementById("grid").replaceChildren(...rooms.map(card));
+    let e = `Potência agora: ${nf0.format(energy.potencia_total_w)} W`;
+    if (energy.consumo_ontem_kwh != null) e += ` · Consumo ontem: ${nf3.format(energy.consumo_ontem_kwh)} kWh`;
+    document.getElementById("energia").textContent = e;
+    document.getElementById("hora").textContent = "Atualizado às " + new Date().toLocaleTimeString("pt-PT");
+    erro.style.display = "none";
+  } catch (err) {
+    erro.textContent = "Sem dados: " + err.message;
+    erro.style.display = "block";
+  }
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
