@@ -11,14 +11,41 @@ python -m src.api [--sim] [--port 8000]   # API + UI em http://127.0.0.1:8000
                                        # gémeo digital 3D em http://127.0.0.1:8000/twin
 python scripts/simulate.py rooms       # divisões do simulador
 python scripts/simulate.py temp 18 --room cozinha
+python -m src.storage.recorder         # só perceção + gravação do histórico (deixar a correr à noite)
+python -m src.storage.recorder --status   # o que está gravado
 ```
+
+Guião da demo: [docs/demo.md](docs/demo.md).
 
 - Divisões: o MCP agrupa os dispositivos em `rooms[].devices` (Sala, Quarto). As divisões
   **simuladas** e os parâmetros por divisão (`setpoint_c`, limiares) estão em `config/home.json`.
 - `SIMULATE=false` (omissão): só o MCP real. `SIM_ROOMS=true` junta-lhe as divisões simuladas do
-  config (desligado por agora: só dados reais). `SIMULATE=true` / `--sim`: tudo simulado (testes).
-- Histórico: SQLite em `var/history.db` (`var/history_sim.db` com `SIMULATE=true`), gravado a
-  cada `STORE_INTERVAL_S` segundos.
+  config (desligado por agora: só dados reais). `SIMULATE=true` / `--sim`: tudo simulado (testes);
+  nesse modo nenhuma escrita sai para o MCP, e os testes nunca escrevem na casa real.
+- Memórias em `var/home.db` (`var/home_sim.db` com `SIMULATE=true`), SQLite local:
+  - **dados**: `readings` a cada `STORE_INTERVAL_S` (temperatura, humidade, `power_w`, energia de hoje e
+    de ontem, `open`, `on`, bateria), `events` (todos os eventos) e `decisions` (propostas, decisão,
+    explicação, autonomia e resposta do utilizador);
+  - **preferências**: `preferences`, versionadas (alterar cria uma linha nova; revogar desativa).
+  O `var/history.db` antigo é importado uma vez. Se o gravador e a API correrem ao mesmo tempo, só um grava.
+
+### Chat com o Coordenador, autonomia e sugestões
+
+- O utilizador fala só com o Coordenador (painel à direita em `/twin`, `POST /chat`). Cada mensagem é
+  classificada com output estruturado (LLM + Pydantic; se o LLM falhar, regras em PT-PT): perguntas de
+  estado (respondidas com dados reais), preferências, regras (cenário `TT_` no MCP via
+  `guard()`/`execute()`), disposição do 3D, respostas a propostas e sugestões, comandos diretos.
+  Tudo o que fica guardado ou é enviado é primeiro reformulado e confirmado.
+- Autonomia por categoria (`energia`, `conforto`, `seguranca`, `luz`): `auto` executa (respeita o
+  `DRY_RUN`), `perguntar` (omissão) deixa a decisão pendente no chat com Aprovar / Rejeitar / Alterar,
+  `nunca` só regista. Ao fim de 3 aprovações seguidas (ou com "faz sempre assim"), a casa pergunta se
+  passa a fazer aquilo sozinha. O caminho de emergência ignora todas as preferências.
+- Sugestões proativas (`src/insights/`): os padrões são detetados em código sobre o histórico real
+  (≥ `INSIGHT_MIN_DAYS` dias). O LLM só redige a frase e a frase é verificada contra a evidência. No
+  máximo 2 por dia. **Porquê?** desenha o histórico que originou a sugestão.
+- "O que a casa sabe de ti": ver, editar, revogar e apagar tudo (`/knowledge`).
+- 3D: "o quarto fica à direita da sala" ou o modo **Ajustar 3D** (arrastar, gravar, desfazer). As
+  alterações ficam em `var/layout_user.json`; o `config/layout.json` continua a ser a base versionada.
 
 ### Gémeo digital 3D (`/twin`)
 

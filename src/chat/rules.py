@@ -13,6 +13,7 @@ device action in the MCP: the light turns amber, and the confirmation message sa
 """
 
 import re
+import time
 from typing import Callable
 
 from ..perception.state import HomeState, _num, de, em
@@ -163,6 +164,7 @@ class RuleWatcher:
     def __init__(self, prefs, memory, post: Callable[[str], None]):
         self.prefs, self.memory, self.post = prefs, memory, post
         self._last: dict[str, bool] = {}
+        self._started = time.time()
 
     def on_event(self, _event=None) -> list[str]:
         state = self.memory.state
@@ -172,7 +174,8 @@ class RuleWatcher:
         for p in self.prefs.get_active(None, "rule"):
             v = p["value"]
             now = rule_holds(v, state)
-            was = self._last.get(p["id"])
+            # a rule created while we run starts as "not holding": its first match must notify
+            was = self._last.get(p["id"], False if p["ts"] >= self._started else None)
             self._last[p["id"]] = now
             if now and was is False and v.get("notify"):
                 text = f"Regra {v['name']}: {re.sub(r'^quando ', '', v['description']).split(',')[0]}. Aconteceu agora."

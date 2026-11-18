@@ -139,6 +139,17 @@ class TestChatFlows(ChatCase):
         w.on_event()
         self.assertEqual(len(posted), 1)
 
+    def test_rule_created_while_running_notifies_on_first_match(self):
+        posted = []
+        w = RuleWatcher(self.mem.prefs, self.memory, posted.append)  # watcher already running
+        self.chat.handle("Se abrir a janela com o aquecedor ligado, avisa-me")
+        self.chat.handle("sim")
+        self.home.set_contact(True)
+        self.home.set_plug(True)
+        self.refresh()
+        w.on_event()  # the window event itself: no event in between
+        self.assertEqual(len(posted), 1)
+
     def test_security_always_asks(self):
         msgs = self.chat.handle("arma a casa")
         self.assertIn("Confirmas?", self.last(msgs))
