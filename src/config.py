@@ -67,6 +67,9 @@ class Settings(BaseModel):
     llm_reasoning_effort: str  # "none" (fast, default) | "low" | "medium" | "high" | "" = not sent
     chat_llm: bool  # the chat classifies messages with the LLM (false = PT-PT rules only)
     chat_timeout_s: float
+    insight_min_days: int  # a pattern must be seen on at least this many days (demo: 2)
+    insight_max_per_day: int
+    insight_every_s: float
     agents_enabled: bool  # the API process sends events to the agents over A2A
     agents_host: str
     agents_base_port: int  # Segurança = base+1, Energia = base+2, Conforto = base+3
@@ -129,6 +132,9 @@ def get_settings() -> Settings:
         llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT", "none").strip(),
         chat_llm=_bool("CHAT_LLM", True),
         chat_timeout_s=_float("CHAT_TIMEOUT_S", 30.0),
+        insight_min_days=int(_float("INSIGHT_MIN_DAYS", 2)),
+        insight_max_per_day=int(_float("INSIGHT_MAX_PER_DAY", 2)),
+        insight_every_s=_float("INSIGHT_EVERY_S", 1800),
         agents_enabled=_bool("AGENTS", True),
         agents_host=os.environ.get("AGENTS_HOST") or "127.0.0.1",
         agents_base_port=int(_float("AGENTS_BASE_PORT", 9100)),

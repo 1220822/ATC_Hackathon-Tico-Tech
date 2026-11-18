@@ -279,6 +279,28 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
     def chat_action(a: ChatActionIn):
         return {"messages": need_chat().action(a.action, a.id, a.response, a.comment)}
 
+    @app.get("/insights")
+    def insights_list():
+        c = need_chat()
+        if c.insights is None:
+            return {"candidatas": [], "sugestoes": []}
+        return {"candidatas": [i.model_dump() for i in c.insights.candidates()], "sugestoes": c.insights.store.recent(30)}
+
+    @app.post("/insights/run")
+    def insights_run():
+        c = need_chat()
+        if c.insights is None:
+            raise HTTPException(503, "Sugestões indisponíveis.")
+        return {"messages": c.insights.on_request(chat=c)}
+
+    @app.get("/insights/{sid}/evidence")
+    def insight_evidence(sid: str):
+        c = need_chat()
+        ev = c.insights.evidence(sid) if c.insights else None
+        if ev is None:
+            raise HTTPException(404, "Sugestão desconhecida.")
+        return ev
+
     @app.get("/chat/pending")
     def chat_pending():
         c = need_chat()
@@ -340,6 +362,12 @@ def main() -> None:
         chat_llm.warmup_async()
     chat = ChatService(memory, settings, coordinator, memories, chat_llm)
     coordinator.on_pending = chat.notify_pending  # pending decisions show up in the chat
+    from .insights.scheduler import Scheduler
+    from .insights.service import InsightService
+    insights = InsightService(memory, settings, coordinator, memories, chat_llm, settings.insight_min_days,
+                              settings.insight_max_per_day, settings.insight_every_s)
+    insights.chat, chat.insights = chat, insights
+    Scheduler(memories.prefs, coordinator, chat).start_thread()
     bus.subscribe(RuleWatcher(memories.prefs, memory, lambda text: chat.say(text, kind="rule")).on_event)
     # fixed rules, straight from the bus, never through an LLM: smoke and intrusion
     bus.subscribe(coordinator.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
@@ -373,6 +401,7 @@ def main() -> None:
     perception.start_thread()
     recorder.step()
     recorder.start_thread()
+    insights.start_thread(first_delay_s=45)  # detectors at start-up and every INSIGHT_EVERY_S
     print(f"UI: http://{a.host}:{a.port}/   ·   3D: http://{a.host}:{a.port}/twin   ·   "
           f"agentes: {'A2A ' + settings.llm_model if settings.agents_enabled else 'desligados'}"
           f"   ·   visão: {'ativa' if vision_worker is not None else 'desligada'}"
