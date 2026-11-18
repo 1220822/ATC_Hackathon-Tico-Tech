@@ -13,6 +13,8 @@ Endpoints (rooms by id or name):
     GET /historic/rooms/{id}/{metric}?start=&end=             raw readings (epoch seconds)
     GET /historic/aggregated/{agg}/rooms/{id}/{metric}?period_s=&start=&end=
     GET /home/energy                                          current power per room + MCP yesterdayConsumption
+    GET /twin/state?n=30                                      digital twin: layout + device values + events
+    GET /twin/stream                                          the same, live (Server-Sent Events)
 Metrics: temperature, humidity, power, contact, light. agg: avg | sum | min | max.
 """
 
@@ -22,13 +24,15 @@ import os
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from .config import Settings, get_settings
 from .memory import SharedMemory
 from .perception.state import HomeState, RoomState, _num
 from .storage.history import History
+from .twin.layout import LayoutError
+from .twin.state import twin_state, twin_stream
 
 UI_FILE = Path(__file__).resolve().parent / "ui" / "index.html"
 log = logging.getLogger(__name__)
@@ -132,6 +136,22 @@ def create_app(memory: SharedMemory, settings: Settings) -> FastAPI:
             "moeda": st.energy.tariff_currency,
         }
 
+    @app.get("/twin/state")
+    def get_twin_state(n: int = Query(30, ge=0, le=500)):
+        try:
+            st = twin_state(memory, settings, n=n)
+        except LayoutError as e:
+            raise HTTPException(500, str(e)) from None
+        if st is None:
+            raise HTTPException(503, "Estado da casa ainda não disponível.")
+        return st
+
+    @app.get("/twin/stream")
+    async def get_twin_stream(request: Request):
+        return StreamingResponse(twin_stream(memory, settings, disconnected=request.is_disconnected),
+                                 media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     return app
 
 
@@ -166,7 +186,10 @@ def main() -> None:
     recorder = HistoryRecorder(memory, History(settings.history_db), settings.store_interval_s)
     recorder.step()
     recorder.start_thread()
-    uvicorn.run(create_app(memory, settings), host=a.host, port=a.port, log_level="warning")
+    print(f"UI: http://{a.host}:{a.port}/   ·   3D: http://{a.host}:{a.port}/twin", flush=True)
+    # open SSE streams would otherwise keep Ctrl+C waiting
+    uvicorn.run(create_app(memory, settings), host=a.host, port=a.port, log_level="warning",
+                timeout_graceful_shutdown=2)
 
 
 if __name__ == "__main__":

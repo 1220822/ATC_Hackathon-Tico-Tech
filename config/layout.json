@@ -1,6 +1,13 @@
 {
   "version": 1,
   "notes": "Gerado por scripts/layout_init.py a partir do get_home; ajustar à mão. Coordenadas em metros relativas ao canto (x, z) de cada divisão; north = fundo (z 0), south = frente (z depth).",
+  "display": {
+    "plug_active_w": 20.0,
+    "heat_min_c": 16.0,
+    "heat_mid_c": 21.0,
+    "heat_max_c": 26.0,
+    "camera_active_s": 60.0
+  },
   "rooms": {
     "e50aa04b-3ca3-443e-9d54-3e504bc7d7a1": {
       "name": "Sala",

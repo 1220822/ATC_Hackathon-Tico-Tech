@@ -2,8 +2,12 @@
 
 import logging
 import threading
+import time
+import uuid
 from collections import deque
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, Literal
+
+from pydantic import BaseModel, Field
 
 from .perception.state import Event, HomeState
 
@@ -33,27 +37,78 @@ class EventBus:
                         log.exception("subscriber failed on %s", event.type)
 
 
+class Decision(BaseModel):
+    """A proposal or decision of an agent / the Coordinator, shown in the UI timeline.
+    The Coordinator (not in the repo yet) records them with SharedMemory.add_decision()."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
+    ts: float = Field(default_factory=time.time)
+    agent: str  # Coordenador | Energia | Conforto | Segurança | Emergência
+    message: str  # PT-PT, e.g. "janela aberta com o aquecedor ligado: proponho desligar"
+    device_id: str | None = None
+    room: str | None = None
+    room_name: str | None = None
+    action: dict[str, Any] | None = None  # capability body, e.g. {"type": "power", "value": "off"}
+    status: Literal["proposta", "aprovada", "rejeitada", "dry-run", "executada", "erro"] = "proposta"
+
+
 class SharedMemory:
-    """What agents read: the current state and the recent event history."""
+    """What agents read: the current state and the recent event history.
+
+    Every state update bumps `version`; events and decisions get a sequence number, so readers
+    (e.g. the /twin/stream SSE endpoint) can ask for what is new without polling the MCP."""
 
     def __init__(self, max_events: int = 500):
         self._lock = threading.Lock()
         self._state: HomeState | None = None
-        self._events: deque[Event] = deque(maxlen=max_events)
+        self._version = 0
+        self._seq = 0
+        self._events: deque[tuple[int, Event]] = deque(maxlen=max_events)
+        self._decisions: deque[tuple[int, Decision]] = deque(maxlen=max_events)
 
-    def update_state(self, state: HomeState) -> None:
+    def update_state(self, state: HomeState | None) -> None:
         with self._lock:
             self._state = state
+            self._version += 1
 
     def add_events(self, events: Iterable[Event]) -> None:
         with self._lock:
-            self._events.extend(events)
+            for e in events:
+                self._seq += 1
+                self._events.append((self._seq, e))
+
+    def add_decision(self, decision: Decision) -> Decision:
+        with self._lock:
+            self._seq += 1
+            self._decisions.append((self._seq, decision))
+        return decision
 
     @property
     def state(self) -> HomeState | None:
         with self._lock:
             return self._state
 
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+    @property
+    def seq(self) -> int:
+        with self._lock:
+            return self._seq
+
     def recent_events(self, n: int = 50) -> list[Event]:
         with self._lock:
-            return list(self._events)[-n:]
+            return [e for _, e in list(self._events)[-n:]]
+
+    def recent_decisions(self, n: int = 50) -> list[Decision]:
+        with self._lock:
+            return [d for _, d in list(self._decisions)[-n:]]
+
+    def events_after(self, seq: int) -> list[tuple[int, Event]]:
+        with self._lock:
+            return [(i, e) for i, e in self._events if i > seq]
+
+    def decisions_after(self, seq: int) -> list[tuple[int, Decision]]:
+        with self._lock:
+            return [(i, d) for i, d in self._decisions if i > seq]

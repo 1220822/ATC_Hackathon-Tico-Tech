@@ -92,9 +92,25 @@ class DeviceLayout(_Model):
     target: Vec3 | None = None  # camera: point it looks at, relative to the room corner
 
 
+class Display(_Model):
+    """How values are drawn (not what exists)."""
+    plug_active_w: float = Field(20.0, ge=0)  # plug glows above this power
+    heat_min_c: float = 16.0  # floor heat map: blue
+    heat_mid_c: float = 21.0  # green
+    heat_max_c: float = 26.0  # red
+    camera_active_s: float = Field(60.0, gt=0)  # motion/sound highlighted for this long
+
+    @model_validator(mode="after")
+    def _order(self):
+        if not self.heat_min_c < self.heat_mid_c < self.heat_max_c:
+            raise ValueError("heat_min_c < heat_mid_c < heat_max_c")
+        return self
+
+
 class Layout(_Model):
     version: int = 1
     notes: str = ""
+    display: Display = Field(default_factory=Display)
     rooms: dict[str, RoomLayout] = Field(default_factory=dict)
     devices: dict[str, DeviceLayout] = Field(default_factory=dict)
 
