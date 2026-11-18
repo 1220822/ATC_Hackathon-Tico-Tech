@@ -54,8 +54,9 @@ class Settings(BaseModel):
     # rooms, per-room parameters and simulated rooms (versioned, no secrets)
     home_config_file: Path
     sim_rooms: bool  # add the simulated rooms of home_config_file to the real house (off: real data only)
-    # history (SQLite): numeric readings stored every store_interval_s
+    # history (SQLite, var/home.db): readings every store_interval_s, events, decisions, preferences
     history_db: Path
+    legacy_history_db: Path  # old var/history.db, imported once into history_db
     store_interval_s: float
     # 3D digital twin: where rooms and devices are drawn (versioned)
     layout_file: Path
@@ -116,7 +117,8 @@ def get_settings() -> Settings:
         home_config_file=Path(os.environ.get("HOME_CONFIG_FILE", str(ROOT / "config" / "home.json"))),
         sim_rooms=_bool("SIM_ROOMS", False),
         # SIMULATE=true has its own file: simulated Sala/Quarto share the real room ids
-        history_db=Path(os.environ.get("HISTORY_DB", str(VAR_DIR / ("history_sim.db" if simulate else "history.db")))),
+        history_db=Path(os.environ.get("HISTORY_DB", str(VAR_DIR / ("home_sim.db" if simulate else "home.db")))),
+        legacy_history_db=VAR_DIR / ("history_sim.db" if simulate else "history.db"),
         store_interval_s=_float("STORE_INTERVAL_S", 30.0),
         layout_file=Path(os.environ.get("LAYOUT_FILE", str(ROOT / "config" / "layout.json"))),
         llm_base_url=llm_base_url,

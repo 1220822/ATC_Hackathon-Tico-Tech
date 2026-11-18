@@ -20,7 +20,8 @@ Endpoints (rooms by id or name):
     GET /agents/status                                        A2A agents as seen by the Coordinator
     GET /tools/consumo_por_hora?divisao=&horas=               read-only tools of the LLM agents
     GET /tools/tendencia_temperatura?divisao=&horas=&periodo_min=
-Metrics: temperature, humidity, power, contact, light. agg: avg | sum | min | max.
+Metrics: temperature, humidity, power_w, energy_today_kwh, energy_yesterday_kwh, open, on, battery
+(old names power, contact, light still work). agg: avg | sum | min | max.
 """
 
 import argparse
@@ -260,9 +261,10 @@ def main() -> None:
     from .memory import EventBus
     from .perception.poller import Perception
     from .perception.sources import make_source
-    from .storage.history import HistoryRecorder
+    from .storage.history import HistoryRecorder, import_legacy
 
     settings = get_settings()
+    import_legacy(History(settings.history_db), settings.legacy_history_db)
     memory, bus = SharedMemory(), EventBus()
     coordinator = Coordinator(memory, settings)
     # fixed rules, straight from the bus, never through an LLM: smoke and intrusion
