@@ -5,11 +5,14 @@ import threading
 import time
 import uuid
 from collections import deque
-from typing import Any, Callable, Iterable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal
 
 from pydantic import BaseModel, Field
 
 from .perception.state import Event, HomeState
+
+if TYPE_CHECKING:
+    from .vision.models import VisionObservation
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +68,8 @@ class SharedMemory:
         self._events: deque[tuple[int, Event]] = deque(maxlen=max_events)
         self._decisions: deque[tuple[int, Decision]] = deque(maxlen=max_events)
         self._agents: dict[str, dict] = {}  # A2A agents as seen by the Coordinator's bridge
+        self._vision_by_room: dict[str, Any] = {}  # latest VisionObservation per room id
+        self._latest_vision: Any = None
 
     def update_state(self, state: HomeState | None) -> None:
         with self._lock:
@@ -121,3 +126,23 @@ class SharedMemory:
     def decisions_after(self, seq: int) -> list[tuple[int, Decision]]:
         with self._lock:
             return [(i, d) for i, d in self._decisions if i > seq]
+
+    def set_vision(self, obs: "VisionObservation") -> None:
+        with self._lock:
+            self._latest_vision = obs
+            if obs.room_id:
+                self._vision_by_room[obs.room_id] = obs
+
+    def latest_vision(self, room: str | None = None) -> "VisionObservation | None":
+        with self._lock:
+            if not room:
+                return self._latest_vision
+            if room in self._vision_by_room:
+                return self._vision_by_room[room]
+            key = room.casefold()
+            for obs in self._vision_by_room.values():
+                if obs.room_name and obs.room_name.casefold() == key:
+                    return obs
+            if self._latest_vision is not None and self._latest_vision.room_name.casefold() == key:
+                return self._latest_vision
+            return None
