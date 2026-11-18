@@ -1,3 +1,4 @@
+import json
 import os
 import struct
 import tempfile
@@ -7,10 +8,20 @@ import zlib
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 from pydantic import ValidationError
 
 from src.config import VAR_DIR, get_settings
 from src.memory import SharedMemory
+from src.vision.analyzer import (
+    MockVisionAnalyzer,
+    OpenAIVisionAnalyzer,
+    VisionAnalysisPayload,
+    VisionInferenceError,
+    VisionTimeoutError,
+    make_analyzer,
+    parse_vision_payload,
+)
 from src.vision.capture import (
     CaptureError,
     FileFrameSource,
@@ -298,6 +309,157 @@ class TestFrameCapture(unittest.TestCase):
             self.assertNotIn("supersecret", str(ctx.exception))
             with self.assertRaises(CaptureError):
                 WebcamFrameSource(0).capture()
+
+
+class TestVisionAnalyzer(unittest.TestCase):
+    def test_parse_clean_fenced_and_think_json(self):
+        raw = json.dumps({
+            "has_person": True,
+            "person_count": 2,
+            "category": "person",
+            "window_or_door_open": True,
+            "smoke_or_fire_visible": False,
+            "objects": ["pessoa", "janela"],
+            "overall_confidence": 0.88,
+            "scene_note_pt": "Duas pessoas junto à janela aberta.",
+        })
+        p1 = parse_vision_payload(raw)
+        self.assertTrue(p1.has_person)
+        self.assertEqual(p1.person_count, 2)
+        self.assertTrue(p1.window_or_door_open)
+        self.assertEqual(p1.objects, ("pessoa", "janela"))
+
+        fenced = f"Aqui está o resultado:\n```json\n{raw}\n```"
+        self.assertEqual(parse_vision_payload(fenced), p1)
+
+        with_think = f"<think>vejo duas pessoas e janela aberta</think>\n{raw}"
+        self.assertEqual(parse_vision_payload(with_think), p1)
+
+        # confidence alias + count reconciliation
+        alias = parse_vision_payload('{"has_person": true, "category": "person", "confidence": 0.75}')
+        self.assertEqual(alias.person_count, 1)
+        self.assertEqual(alias.overall_confidence, 0.75)
+
+        with self.assertRaises(VisionInferenceError):
+            parse_vision_payload("isto não é json")
+
+    def test_openai_analyzer_payload_and_contexts(self):
+        seen: list[dict] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            body = json.loads(req.content.decode("utf-8"))
+            seen.append({"url": str(req.url), "auth": req.headers.get("authorization"), "body": body})
+            reply = {
+                "has_person": True,
+                "person_count": 1,
+                "category": "person",
+                "window_or_door_open": True,
+                "smoke_or_fire_visible": False,
+                "objects": ["pessoa", "janela"],
+                "overall_confidence": 0.91,
+                "scene_note_pt": "Uma pessoa junto à janela aberta na sala.",
+            }
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(reply)}}]})
+
+        analyzer = OpenAIVisionAnalyzer(
+            base_url="http://192.168.2.161:1234/v1",
+            model_name="qwen3.8:latest",
+            api_key="local",
+            timeout_s=25.0,
+            reasoning_effort="none",
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            png = make_solid_png()
+            res = analyzer.analyze(png, context="intrusion", room_name="Sala", security_status="AWAY", trigger_type="camera_motion")
+            self.assertTrue(res.has_person)
+            self.assertTrue(res.window_or_door_open)
+            self.assertEqual(len(seen), 1)
+            b = seen[0]["body"]
+            self.assertEqual(seen[0]["url"], "http://192.168.2.161:1234/v1/chat/completions")
+            self.assertEqual(seen[0]["auth"], "Bearer local")
+            self.assertEqual(b["model"], "qwen3.8:latest")
+            self.assertEqual(b["temperature"], 0.0)
+            self.assertEqual(b["max_tokens"], 500)
+            self.assertEqual(b["response_format"], {"type": "json_object"})
+            self.assertEqual(b["reasoning_effort"], "none")
+            user_parts = b["messages"][1]["content"]
+            self.assertIn("janela", user_parts[0]["text"].lower())
+            self.assertTrue(user_parts[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+            # smoke context prompt mentions fumo / chamas
+            analyzer.analyze(b"\xff\xd8\xff\xd9", context="smoke", room_name="Sala", trigger_type="smoke_detected")
+            smoke_parts = seen[1]["body"]["messages"][1]["content"]
+            self.assertIn("fumo", smoke_parts[0]["text"].lower())
+            self.assertIn("chamas", smoke_parts[0]["text"].lower())
+            self.assertTrue(smoke_parts[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        finally:
+            analyzer.close()
+
+    def test_response_format_400_fallback(self):
+        attempts = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            body = json.loads(req.content.decode("utf-8"))
+            attempts.append("response_format" in body)
+            if "response_format" in body:
+                return httpx.Response(400, text="unsupported parameter: response_format")
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"category": "empty", "overall_confidence": 0.8}'}}]})
+
+        analyzer = OpenAIVisionAnalyzer("http://localhost:11434/v1", "qwen3.8:latest", transport=httpx.MockTransport(handler))
+        try:
+            res = analyzer.analyze(make_solid_png(), context="general")
+            self.assertEqual(res.category, "empty")
+            self.assertEqual(attempts, [True, False])
+        finally:
+            analyzer.close()
+
+    def test_timeout_http_500_and_malformed_json(self):
+        def timeout_handler(req: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=req)
+
+        a_to = OpenAIVisionAnalyzer("http://localhost:11434/v1", "qwen3.8:latest", transport=httpx.MockTransport(timeout_handler))
+        try:
+            with self.assertRaises(VisionTimeoutError):
+                a_to.analyze(make_solid_png(), context="intrusion")
+        finally:
+            a_to.close()
+
+        a_500 = OpenAIVisionAnalyzer(
+            "http://localhost:11434/v1",
+            "qwen3.8:latest",
+            transport=httpx.MockTransport(lambda req: httpx.Response(500, text="server error")),
+        )
+        try:
+            with self.assertRaises(VisionInferenceError):
+                a_500.analyze(make_solid_png(), context="intrusion")
+        finally:
+            a_500.close()
+
+        a_bad = OpenAIVisionAnalyzer(
+            "http://localhost:11434/v1",
+            "qwen3.8:latest",
+            transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"choices": [{"message": {"content": "sem json"}}]})),
+        )
+        try:
+            with self.assertRaises(VisionInferenceError):
+                a_bad.analyze(make_solid_png(), context="intrusion")
+        finally:
+            a_bad.close()
+
+    def test_mock_analyzer_and_factory(self):
+        mock = MockVisionAnalyzer({"has_person": True, "person_count": 1, "category": "person", "overall_confidence": 0.9})
+        out = mock.analyze(make_solid_png(), context="intrusion", room_name="Sala")
+        self.assertTrue(out.has_person)
+        self.assertEqual(len(mock.calls), 1)
+
+        s = get_settings()
+        real = make_analyzer(s)
+        try:
+            self.assertIsInstance(real, OpenAIVisionAnalyzer)
+            self.assertEqual(real.model_name, s.vision_model)
+        finally:
+            real.close()
 
 
 if __name__ == "__main__":
