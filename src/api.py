@@ -17,6 +17,7 @@ Endpoints (rooms by id or name):
     GET /twin/state?n=30                                      digital twin: layout + device values + events
     GET /twin/stream                                          the same, live (Server-Sent Events)
     POST /coordinator/request {device_id, action: on|off}     user request -> Coordinator (guard, dry-run)
+    GET /agents/status                                        A2A agents as seen by the Coordinator
     GET /tools/consumo_por_hora?divisao=&horas=               read-only tools of the LLM agents
     GET /tools/tendencia_temperatura?divisao=&horas=&periodo_min=
 Metrics: temperature, humidity, power, contact, light. agg: avg | sum | min | max.
@@ -186,6 +187,10 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
             raise HTTPException(400, out["erro"])
         return out
 
+    @app.get("/agents/status")
+    def agents_status():
+        return memory.agent_status()
+
     @app.post("/coordinator/request")
     def coordinator_request(req: UserRequest):
         """Simple actions from the UI. Never writes directly: the Coordinator guards it and,
@@ -205,13 +210,18 @@ def main() -> None:
     p.add_argument("--sim", action="store_true", help="tudo simulado (SIMULATE=true)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--agents", action="store_true",
+                   help="arranca também os agentes LLM (python -m src.agents) num processo à parte")
     a = p.parse_args()
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    for noisy in ("httpx", "httpx2", "a2a", "agent_framework"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     if a.sim:
         os.environ["SIMULATE"] = "true"
+    os.environ.setdefault("API_URL", f"http://{a.host}:{a.port}")  # for the agents' read-only tools
 
     import uvicorn
 
@@ -221,8 +231,18 @@ def main() -> None:
     from .storage.history import HistoryRecorder
 
     settings = get_settings()
-    memory = SharedMemory()
-    perception = Perception(make_source(settings), EventBus(), memory, settings)
+    memory, bus = SharedMemory(), EventBus()
+    coordinator = Coordinator(memory, settings)
+    # emergency path: deterministic, straight from the bus, never through an LLM
+    bus.subscribe(coordinator.on_event, types=["smoke_detected", "alarm_cancelled"])
+    agents_proc = None
+    if settings.agents_enabled:
+        from .agents.bridge import AgentBridge
+        AgentBridge(memory, settings, coordinator, bus).start()
+        if a.agents:
+            import subprocess
+            agents_proc = subprocess.Popen([sys.executable, "-m", "src.agents"], env=dict(os.environ))
+    perception = Perception(make_source(settings), bus, memory, settings)
     try:
         perception.step()
     except Exception as e:  # the loop retries with backoff; the API answers 503 meanwhile
@@ -231,10 +251,16 @@ def main() -> None:
     recorder = HistoryRecorder(memory, History(settings.history_db), settings.store_interval_s)
     recorder.step()
     recorder.start_thread()
-    print(f"UI: http://{a.host}:{a.port}/   ·   3D: http://{a.host}:{a.port}/twin", flush=True)
-    # open SSE streams would otherwise keep Ctrl+C waiting
-    uvicorn.run(create_app(memory, settings), host=a.host, port=a.port, log_level="warning",
-                timeout_graceful_shutdown=2)
+    print(f"UI: http://{a.host}:{a.port}/   ·   3D: http://{a.host}:{a.port}/twin   ·   "
+          f"agentes: {'A2A ' + settings.llm_model if settings.agents_enabled else 'desligados'}"
+          f"   ·   {'DRY-RUN' if settings.dry_run else 'ESCRITAS REAIS'}", flush=True)
+    try:
+        # open SSE streams would otherwise keep Ctrl+C waiting
+        uvicorn.run(create_app(memory, settings, coordinator), host=a.host, port=a.port, log_level="warning",
+                    timeout_graceful_shutdown=2)
+    finally:
+        if agents_proc is not None:
+            agents_proc.terminate()
 
 
 if __name__ == "__main__":

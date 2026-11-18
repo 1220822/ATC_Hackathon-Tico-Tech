@@ -66,7 +66,6 @@ AGENTS: dict[str, AgentSpec] = {
                      "estiver a arrefecer a casa, diz isso.",
     ),
 }
-PRIORITY = {"Emergência": 0, "Utilizador": 1, **{a.name: a.priority for a in AGENTS.values()}}
 
 
 def instructions_for(spec: AgentSpec) -> str:

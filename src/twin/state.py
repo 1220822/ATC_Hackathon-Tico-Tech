@@ -135,6 +135,7 @@ def twin_state(memory: SharedMemory, settings: Settings, n: int = 30, now: float
         "display": layout.display.model_dump(),
         "rooms": rooms, "devices": devices, "warnings": placed["warnings"],
     }
+    out["agents"] = memory.agent_status()
     if with_history:
         out["events"] = [event_view(e) for e in memory.recent_events(n) if e.type != "tick"]
         out["decisions"] = [decision_view(d) for d in memory.recent_decisions(n)]

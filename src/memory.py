@@ -48,7 +48,7 @@ class Decision(BaseModel):
     room: str | None = None
     room_name: str | None = None
     action: dict[str, Any] | None = None  # capability body, e.g. {"type": "power", "value": "off"}
-    status: Literal["proposta", "aprovada", "rejeitada", "dry-run", "executada", "erro"] = "proposta"
+    status: Literal["proposta", "informação", "aprovada", "rejeitada", "dry-run", "executada", "erro"] = "proposta"
 
 
 class SharedMemory:
@@ -64,6 +64,7 @@ class SharedMemory:
         self._seq = 0
         self._events: deque[tuple[int, Event]] = deque(maxlen=max_events)
         self._decisions: deque[tuple[int, Decision]] = deque(maxlen=max_events)
+        self._agents: dict[str, dict] = {}  # A2A agents as seen by the Coordinator's bridge
 
     def update_state(self, state: HomeState | None) -> None:
         with self._lock:
@@ -96,6 +97,14 @@ class SharedMemory:
     def seq(self) -> int:
         with self._lock:
             return self._seq
+
+    def set_agent_status(self, key: str, status: dict) -> None:
+        with self._lock:
+            self._agents[key] = dict(status)
+
+    def agent_status(self) -> list[dict]:
+        with self._lock:
+            return [dict(v) for v in self._agents.values()]
 
     def recent_events(self, n: int = 50) -> list[Event]:
         with self._lock:
