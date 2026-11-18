@@ -16,6 +16,7 @@ Endpoints (rooms by id or name):
     GET /twin                                                 3D digital twin (Three.js, served locally)
     GET /twin/state?n=30                                      digital twin: layout + device values + events
     GET /twin/stream                                          the same, live (Server-Sent Events)
+    POST /coordinator/request {device_id, action: on|off}     user request -> Coordinator (guard, dry-run)
 Metrics: temperature, humidity, power, contact, light. agg: avg | sum | min | max.
 """
 
@@ -30,11 +31,13 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import Settings, get_settings
+from .coordinator import Coordinator, RequestRefused, UserRequest
 from .memory import SharedMemory
 from .perception.state import HomeState, RoomState, _num
 from .storage.history import History
 from .twin.layout import LayoutError
 from .twin.state import twin_state, twin_stream
+from .writes import UnknownDevice
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 UI_FILE = UI_DIR / "index.html"
@@ -57,8 +60,9 @@ def room_view(st: HomeState, r: RoomState) -> dict:
     }
 
 
-def create_app(memory: SharedMemory, settings: Settings) -> FastAPI:
+def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinator | None = None) -> FastAPI:
     app = FastAPI(title="Tico&Tech: casa por divisões", version="1.0")
+    coordinator = coordinator or Coordinator(memory, settings)
     History(settings.history_db)  # make sure the file and schema exist
     history = History(settings.history_db, readonly=True)
 
@@ -161,6 +165,17 @@ def create_app(memory: SharedMemory, settings: Settings) -> FastAPI:
         return StreamingResponse(twin_stream(memory, settings, disconnected=request.is_disconnected),
                                  media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/coordinator/request")
+    def coordinator_request(req: UserRequest):
+        """Simple actions from the UI. Never writes directly: the Coordinator guards it and,
+        with DRY_RUN=true (default), only records the decision."""
+        try:
+            return coordinator.request(req).model_dump()
+        except UnknownDevice as e:
+            raise HTTPException(404, str(e)) from None
+        except RequestRefused as e:
+            raise HTTPException(503, str(e)) from None
 
     return app
 

@@ -531,6 +531,7 @@ function renderPanel() {
   const dl = $("painel-valores");
   dl.replaceChildren();
   for (const [k, v] of valueRows(d)) dl.append(el("dt", null, k), el("dd", null, v));
+  $("painel-acoes").querySelectorAll("button").forEach((b) => { if (!d.online) b.disabled = true; });
 }
 
 async function renderChart(d) {
@@ -569,10 +570,48 @@ async function renderChart(d) {
   box.replaceChildren(wrap);
 }
 
+// actions: a request to the Coordinator (POST /coordinator/request), never a direct write.
+// Only what the server lists in state.actions (light/plug on/off); no security actions here.
+function renderActions(d) {
+  const box = $("painel-acoes");
+  box.replaceChildren();
+  const allowed = current.actions?.[d.role];
+  if (!allowed) return;
+  const note = el("div", "nota", current.dry_run
+    ? "Pedido ao Coordenador. Dry-run ativo: a decisão fica registada, nada é enviado à casa."
+    : "Pedido ao Coordenador, que valida antes de executar.");
+  for (const action of allowed) {
+    const b = el("button", null, action === "on" ? "Ligar" : "Desligar");
+    b.type = "button";
+    b.dataset.action = action;
+    b.disabled = !d.online;
+    b.addEventListener("click", async () => {
+      box.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      note.textContent = "A enviar o pedido ao Coordenador…";
+      try {
+        const res = await fetch("/coordinator/request", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: d.id, action, origin: "3D" }),
+        });
+        const body = await res.json();
+        note.textContent = res.ok ? body.message : `Erro: ${body.detail || res.statusText}`;
+      } catch (err) {
+        note.textContent = `Erro: ${err.message}`;
+      } finally {
+        const now = current.devices.find((x) => x.id === d.id);
+        box.querySelectorAll("button").forEach((x) => { x.disabled = !now?.online; });
+      }
+    });
+    box.append(b);
+  }
+  box.append(note);
+}
+
 function openPanel(id) {
   selected = id;
   renderPanel();
   const d = current.devices.find((x) => x.id === id);
+  renderActions(d);
   renderChart(d);
   window.dispatchEvent(new CustomEvent("twin:device-selected", { detail: d }));
 }

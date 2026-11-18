@@ -12,6 +12,7 @@ import time
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from ..config import Settings
+from ..coordinator import UI_ACTIONS
 from ..memory import Decision, SharedMemory
 from ..perception.state import (AlarmEntry, DeviceState, Event, HomeState, _alarm_device, _mode_pt,
                                 _num, classify_alarm, hue_rgb)
@@ -126,6 +127,8 @@ def twin_state(memory: SharedMemory, settings: Settings, n: int = 30, now: float
                       "smoke": alarm["smoke"] and alarm["smoke_room"] == r["id"]})
     out = {
         "ts": state.ts, "home_name": state.home_name, "mode": "simulado" if settings.simulate else "mcp",
+        "dry_run": settings.dry_run,
+        "actions": {role: list(caps["power"]) for role, caps in UI_ACTIONS.items()},  # what the UI may request
         "security": {"status": state.security_status, "label": _mode_pt(state.security_status),
                      "armed": state.armed, "is_alarmed": state.is_alarmed},
         "alarm": alarm,
