@@ -2,6 +2,7 @@ import json
 import os
 import struct
 import tempfile
+import threading
 import time
 import unittest
 import zlib
@@ -12,7 +13,8 @@ import httpx
 from pydantic import ValidationError
 
 from src.config import VAR_DIR, get_settings
-from src.memory import SharedMemory
+from src.memory import EventBus, SharedMemory
+from src.perception.state import DeviceState, Event, HomeState, RoomState
 from src.vision.analyzer import (
     MockVisionAnalyzer,
     OpenAIVisionAnalyzer,
@@ -33,6 +35,7 @@ from src.vision.capture import (
     resolve_frame_path,
 )
 from src.vision.models import VisionObservation, format_vision_message, to_event, vision_severity
+from src.vision.worker import VISION_TRIGGER_EVENTS, VisionWorker, should_trigger_vision
 
 
 def make_solid_png(w: int = 4, h: int = 4, rgb: tuple[int, int, int] = (200, 30, 30)) -> bytes:
@@ -460,6 +463,290 @@ class TestVisionAnalyzer(unittest.TestCase):
             self.assertEqual(real.model_name, s.vision_model)
         finally:
             real.close()
+
+
+def _sample_home_state(security_status: str = "AWAY") -> HomeState:
+    cam = DeviceState(
+        id="cam-sala", name="Camera", type="camera", role="camera", online=True,
+        room_id="r-sala", room_name="Sala",
+    )
+    contact_sala = DeviceState(
+        id="cnt-sala", name="Contact sensor", type="contactSensor", role="contact", online=True,
+        room_id="r-sala", room_name="Sala",
+    )
+    contact_cozinha = DeviceState(
+        id="cnt-coz", name="Contact Cozinha", type="contactSensor", role="contact", online=True,
+        room_id="r-cozinha", room_name="Cozinha", source="sim",
+    )
+    return HomeState(
+        ts=1795000000.0,
+        home_name="Hack 7",
+        security_status=security_status,
+        devices={cam.id: cam, contact_sala.id: contact_sala, contact_cozinha.id: contact_cozinha},
+        rooms={
+            "r-sala": RoomState(id="r-sala", name="Sala", device_ids=[cam.id, contact_sala.id]),
+            "r-cozinha": RoomState(id="r-cozinha", name="Cozinha", simulated=True, device_ids=[contact_cozinha.id]),
+        },
+    )
+
+
+def _ev(etype: str, room: str | None = "r-sala", room_name: str | None = "Sala", **data) -> Event:
+    return Event(type=etype, message="teste", room=room, room_name=room_name, data=data)
+
+
+def _wait_for(pred, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class TestVisionWorker(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.img = self.root / "frame.png"
+        self.img.write_bytes(make_solid_png())
+        self.s = get_settings().model_copy(update={
+            "vision_enabled": True,
+            "vision_cooldown_s": 10.0,
+            "vision_stay_cooldown_s": 30.0,
+            "vision_trigger_disarmed": False,
+            "vision_sim_image": self.img,
+            "vision_frames_dir": self.root / "frames",
+            "vision_max_frames": 10,
+        })
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_trigger_matrix_across_security_modes_and_rooms(self):
+        cases = [
+            # (mode, event_type, room, disarmed_flag, expected_ok, expected_ctx)
+            ("AWAY", "security_alarm", "r-sala", False, True, "intrusion"),
+            ("STAY", "security_alarm", "r-sala", False, True, "intrusion"),
+            ("DISARMED", "security_alarm", "r-sala", False, True, "intrusion"),
+            ("DISARMED", "security_alarm", None, False, True, "intrusion"),
+            ("AWAY", "tamper_alarm", "r-sala", False, True, "intrusion"),
+            ("STAY", "tamper_alarm", "r-sala", False, True, "intrusion"),
+            ("DISARMED", "tamper_alarm", "r-sala", False, True, "intrusion"),
+            ("AWAY", "contact_opened", "r-sala", False, True, "intrusion"),
+            ("STAY", "contact_opened", "r-sala", False, True, "intrusion"),
+            ("DISARMED", "contact_opened", "r-sala", False, False, "general"),
+            ("AWAY", "contact_opened", "r-cozinha", False, False, "general"),  # room-aware: Cozinha has no camera
+            ("AWAY", "camera_motion", "r-sala", False, True, "intrusion"),
+            ("STAY", "camera_motion", "r-sala", False, True, "intrusion"),
+            ("DISARMED", "camera_motion", "r-sala", False, False, "general"),
+            ("DISARMED", "camera_motion", "r-sala", True, True, "intrusion"),
+            ("AWAY", "camera_sound", "r-sala", False, True, "intrusion"),
+            ("STAY", "camera_sound", "r-sala", False, False, "general"),
+            ("DISARMED", "camera_sound", "r-sala", False, False, "general"),
+            ("AWAY", "smoke_detected", "r-sala", False, True, "smoke"),
+            ("STAY", "smoke_detected", "r-sala", False, True, "smoke"),
+            ("DISARMED", "smoke_detected", None, False, True, "smoke"),
+            ("AWAY", "temperature_changed", "r-sala", False, False, "general"),
+            ("AWAY", "contact_closed", "r-sala", False, False, "general"),
+            ("AWAY", "security_mode_changed", None, False, False, "general"),
+            ("AWAY", "tick", None, False, False, "general"),
+        ]
+        for mode, etype, room, disarmed_flag, exp_ok, exp_ctx in cases:
+            with self.subTest(mode=mode, etype=etype, room=room, disarmed_flag=disarmed_flag):
+                st = _sample_home_state(mode)
+                s = self.s.model_copy(update={"vision_trigger_disarmed": disarmed_flag})
+                ok, ctx, cam = should_trigger_vision(_ev(etype, room=room), st, s)
+                self.assertEqual(ok, exp_ok)
+                self.assertEqual(ctx, exp_ctx)
+                if exp_ok:
+                    self.assertEqual(cam.id, "cam-sala")
+
+    def test_intrusion_burst_deduplicates_and_stay_cooldown_differs(self):
+        now = [100.0]
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+        published: list[Event] = []
+        bus.subscribe(published.append, types=["camera_analysis"])
+        analyzer = MockVisionAnalyzer({
+            "has_person": True, "person_count": 1, "category": "person",
+            "window_or_door_open": True, "overall_confidence": 0.9,
+        })
+        worker = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=analyzer,
+            store=FrameStore(self.s.vision_frames_dir, 10),
+            clock=lambda: now[0],
+        ).start()
+        try:
+            # Intrusion burst: contact_opened + security_alarm + camera_motion within 2s -> 1 call
+            worker.on_event(_ev("contact_opened"))
+            worker.on_event(_ev("security_alarm", kind="intrusion"))
+            now[0] += 2.0
+            worker.on_event(_ev("camera_motion"))
+            self.assertTrue(_wait_for(lambda: len(published) == 1))
+            time.sleep(0.05)
+            self.assertEqual(len(analyzer.calls), 1)
+
+            # Still inside AWAY 10s cooldown -> ignored
+            now[0] += 5.0
+            worker.on_event(_ev("camera_motion"))
+            time.sleep(0.05)
+            self.assertEqual(len(analyzer.calls), 1)
+
+            # Past AWAY 10s cooldown -> triggers
+            now[0] += 6.0
+            worker.on_event(_ev("camera_motion"))
+            self.assertTrue(_wait_for(lambda: len(published) == 2))
+
+            # Switch to STAY: camera_motion uses 30s cooldown
+            mem.update_state(_sample_home_state("STAY"))
+            now[0] += 15.0  # > 10s but < 30s
+            worker.on_event(_ev("camera_motion"))
+            time.sleep(0.05)
+            self.assertEqual(len(analyzer.calls), 2)
+
+            now[0] += 20.0  # total 35s >= 30s -> triggers
+            worker.on_event(_ev("camera_motion"))
+            self.assertTrue(_wait_for(lambda: len(published) == 3))
+        finally:
+            worker.stop()
+
+    def test_smoke_priority_upgrade_bypasses_cooldown_and_inflight(self):
+        now = [200.0]
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+        published: list[Event] = []
+        bus.subscribe(published.append, types=["camera_analysis"])
+
+        started_first = threading.Event()
+        release_first = threading.Event()
+
+        class BlockingAnalyzer(MockVisionAnalyzer):
+            def analyze(self, image_bytes, *, context, room_name="", security_status="DISARMED", trigger_type="manual"):
+                if len(self.calls) == 0:
+                    started_first.set()
+                    release_first.wait(2.0)
+                return super().analyze(
+                    image_bytes, context=context, room_name=room_name,
+                    security_status=security_status, trigger_type=trigger_type,
+                )
+
+        analyzer = BlockingAnalyzer(
+            lambda ctx, trig: {"smoke_or_fire_visible": ctx == "smoke", "category": "smoke_or_fire" if ctx == "smoke" else "empty"}
+        )
+        worker = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=analyzer,
+            store=FrameStore(self.s.vision_frames_dir, 10),
+            clock=lambda: now[0],
+        ).start()
+        try:
+            # 1) smoke arrives WHILE intrusion job is in-flight -> queued in priority slot and runs right after
+            worker.on_event(_ev("camera_motion"))
+            self.assertTrue(started_first.wait(2.0))
+            worker.on_event(_ev("smoke_detected"))
+            release_first.set()
+            self.assertTrue(_wait_for(lambda: len(published) == 2))
+            self.assertEqual([c["context"] for c in analyzer.calls], ["intrusion", "smoke"])
+            self.assertEqual(published[1].severity, "critical")
+
+            # 2) smoke also bypasses cooldown after a finished intrusion job
+            now[0] += 15.0
+            worker.on_event(_ev("camera_motion"))
+            self.assertTrue(_wait_for(lambda: len(published) == 3))
+            now[0] += 1.0  # inside 10s cooldown
+            worker.on_event(_ev("smoke_detected"))
+            self.assertTrue(_wait_for(lambda: len(published) == 4))
+            self.assertEqual(analyzer.calls[-1]["context"], "smoke")
+        finally:
+            worker.stop()
+
+    def test_error_and_timeout_fallbacks_preserve_publish_order(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+
+        # Check invariant 4: memory.latest_vision() and memory.recent_events() are ALREADY updated when bus fires!
+        observed_during_publish: list[tuple] = []
+
+        def on_publish(ev: Event):
+            observed_during_publish.append((
+                ev.data["status"],
+                mem.latest_vision("r-sala") is not None and mem.latest_vision("r-sala").id == ev.data["id"],
+                any(e.id == ev.id for e in mem.recent_events()),
+            ))
+
+        bus.subscribe(on_publish, types=["camera_analysis"])
+
+        # Capture failure fallback
+        w_cap = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.root / "missing.png"),
+            analyzer=MockVisionAnalyzer(),
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        ).start()
+        try:
+            w_cap.on_event(_ev("camera_motion"))
+            self.assertTrue(_wait_for(lambda: len(observed_during_publish) == 1))
+            self.assertEqual(observed_during_publish[0], ("capture_error", True, True))
+        finally:
+            w_cap.stop()
+
+        # Timeout fallback
+        w_to = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=MockVisionAnalyzer(error=VisionTimeoutError("timeout")),
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        ).start()
+        try:
+            w_to.on_event(_ev("camera_motion"))
+            self.assertTrue(_wait_for(lambda: len(observed_during_publish) == 2))
+            self.assertEqual(observed_during_publish[1], ("timeout", True, True))
+        finally:
+            w_to.stop()
+
+    def test_analyze_now_serialises_concurrent_io(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("DISARMED"))
+
+        overlap = [0]
+        active = [0]
+        gate = threading.Lock()
+
+        class CheckingAnalyzer(MockVisionAnalyzer):
+            def analyze(self, image_bytes, *, context, room_name="", security_status="DISARMED", trigger_type="manual"):
+                with gate:
+                    active[0] += 1
+                    if active[0] > 1:
+                        overlap[0] += 1
+                time.sleep(0.05)
+                with gate:
+                    active[0] -= 1
+                return super().analyze(
+                    image_bytes, context=context, room_name=room_name,
+                    security_status=security_status, trigger_type=trigger_type,
+                )
+
+        worker = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=CheckingAnalyzer(),
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        ).start()
+        try:
+            t1 = threading.Thread(target=worker.analyze_now, kwargs={"room": "Sala", "context": "intrusion"})
+            t2 = threading.Thread(target=worker.analyze_now, kwargs={"room": "Sala", "context": "smoke"})
+            t1.start()
+            t2.start()
+            t1.join(3)
+            t2.join(3)
+            self.assertEqual(overlap[0], 0)
+            self.assertIsNotNone(mem.latest_vision("Sala"))
+            self.assertEqual(len(VISION_TRIGGER_EVENTS), 6)
+        finally:
+            worker.stop()
 
 
 if __name__ == "__main__":
