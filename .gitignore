@@ -224,3 +224,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# GECAD BEMS (projeto de referência local; tem credenciais no config.json)
+GECAD BEMS/

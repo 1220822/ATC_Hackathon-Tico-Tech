@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "notes": "Gerado por scripts/layout_init.py a partir do get_home; ajustar à mão. Coordenadas em metros relativas ao canto (x, z) de cada divisão; north = fundo (z 0), south = frente (z depth).",
+  "rooms": {
+    "e50aa04b-3ca3-443e-9d54-3e504bc7d7a1": {
+      "name": "Sala",
+      "x": 0.0,
+      "z": 0.0,
+      "width": 5.0,
+      "depth": 4.0,
+      "height": 2.6,
+      "walls": [
+        {
+          "side": "north",
+          "openings": [
+            {
+              "id": "janela-sala",
+              "type": "window",
+              "offset": 2.5,
+              "width": 1.2,
+              "height": 1.2,
+              "sill": 0.9
+            }
+          ]
+        },
+        {
+          "side": "south",
+          "openings": [
+            {
+              "id": "porta-sala",
+              "type": "door",
+              "offset": 1.0,
+              "width": 0.9,
+              "height": 2.1,
+              "sill": 0.0
+            }
+          ]
+        },
+        {
+          "side": "west",
+          "openings": []
+        },
+        {
+          "side": "east",
+          "openings": [
+            {
+              "id": "porta-sala-quarto",
+              "type": "door",
+              "offset": 2.0,
+              "width": 0.9,
+              "height": 2.1,
+              "sill": 0.0
+            }
+          ]
+        }
+      ]
+    },
+    "bd792398-7e60-40e9-9b62-11c4255f6c72": {
+      "name": "Quarto",
+      "x": 5.0,
+      "z": 0.0,
+      "width": 5.0,
+      "depth": 4.0,
+      "height": 2.6,
+      "walls": [
+        {
+          "side": "north",
+          "openings": []
+        },
+        {
+          "side": "south",
+          "openings": [
+            {
+              "id": "porta-quarto",
+              "type": "door",
+              "offset": 1.0,
+              "width": 0.9,
+              "height": 2.1,
+              "sill": 0.0
+            }
+          ]
+        },
+        {
+          "side": "east",
+          "openings": []
+        }
+      ]
+    }
+  },
+  "devices": {
+    "cf105207-a096-4ac1-a891-4a5a15023df6": {
+      "room_id": "e50aa04b-3ca3-443e-9d54-3e504bc7d7a1",
+      "name": "Camera",
+      "position": [
+        0.25,
+        2.35,
+        0.25
+      ],
+      "rotation_y": 45.0,
+      "mount": "corner",
+      "opening": null,
+      "target": [
+        1.0,
+        1.0,
+        4.0
+      ]
+    },
+    "ef8015f6-d7af-4da6-b48a-f1d0e7630b3e": {
+      "room_id": "e50aa04b-3ca3-443e-9d54-3e504bc7d7a1",
+      "name": "Security hub",
+      "position": [
+        4.6,
+        0.9,
+        0.1
+      ],
+      "rotation_y": 0.0,
+      "mount": "wall",
+      "opening": null,
+      "target": null
+    },
+    "20d98aec-c266-4707-bd27-d06bb51733b7": {
+      "room_id": "e50aa04b-3ca3-443e-9d54-3e504bc7d7a1",
+      "name": "Contact sensor",
+      "position": [
+        3.16,
+        1.5,
+        0.08
+      ],
+      "rotation_y": 0.0,
+      "mount": "window",
+      "opening": "janela-sala",
+      "target": null
+    },
+    "726d443d-502c-41ab-b9c1-f1a84a02a10c": {
+      "room_id": "e50aa04b-3ca3-443e-9d54-3e504bc7d7a1",
+      "name": "Smoke sensor",
+      "position": [
+        1.75,
+        2.56,
+        1.6
+      ],
+      "rotation_y": 0.0,
+      "mount": "ceiling",
+      "opening": null,
+      "target": null
+    },
+    "b667d87c-2566-440a-afce-02d9ec82df1b": {
+      "room_id": "bd792398-7e60-40e9-9b62-11c4255f6c72",
+      "name": "Light",
+      "position": [
+        2.5,
+        2.52,
+        2.0
+      ],
+      "rotation_y": 0.0,
+      "mount": "ceiling",
+      "opening": null,
+      "target": null
+    },
+    "a82edb80-d92f-44bb-8df0-8e10beeea621": {
+      "room_id": "bd792398-7e60-40e9-9b62-11c4255f6c72",
+      "name": "Plug",
+      "position": [
+        0.06,
+        0.3,
+        3.2
+      ],
+      "rotation_y": 90.0,
+      "mount": "wall",
+      "opening": null,
+      "target": null
+    },
+    "54e1ea8e-9ca3-4933-a4dc-a1eb37e6990c": {
+      "room_id": "bd792398-7e60-40e9-9b62-11c4255f6c72",
+      "name": "Temperature sensor",
+      "position": [
+        4.94,
+        1.5,
+        1.4
+      ],
+      "rotation_y": -90.0,
+      "mount": "wall",
+      "opening": null,
+      "target": null
+    }
+  }
+}

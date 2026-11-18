@@ -56,6 +56,8 @@ class Settings(BaseModel):
     # history (SQLite): numeric readings stored every store_interval_s
     history_db: Path
     store_interval_s: float
+    # 3D digital twin: where rooms and devices are drawn (versioned)
+    layout_file: Path
 
 
 @lru_cache
@@ -84,4 +86,5 @@ def get_settings() -> Settings:
         # SIMULATE=true has its own file: simulated Sala/Quarto share the real room ids
         history_db=Path(os.environ.get("HISTORY_DB", str(VAR_DIR / ("history_sim.db" if simulate else "history.db")))),
         store_interval_s=_float("STORE_INTERVAL_S", 30.0),
+        layout_file=Path(os.environ.get("LAYOUT_FILE", str(ROOT / "config" / "layout.json"))),
     )
