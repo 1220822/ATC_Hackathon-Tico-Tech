@@ -99,8 +99,10 @@ def _event_line(e: Event) -> str:
             f"janela_aberta={win_str}, fumo={smoke_str}, confiança={conf_str}{note_part}]")
 
 
-def build_prompt(events: list[Event], state: HomeState, now: float | None = None) -> str:
-    """The A2A message for an agent: the events, the house in short, and what may be proposed."""
+def build_prompt(events: list[Event], state: HomeState, now: float | None = None,
+                 memory_text: str | None = None) -> str:
+    """The A2A message for an agent: the events, the house in short, what may be proposed and, if
+    given, the two memories (src.context.render_context)."""
     now = time.time() if now is None else now
     ev_lines = [_event_line(e) for e in events]
     summary = state.summary()
@@ -113,7 +115,8 @@ def build_prompt(events: list[Event], state: HomeState, now: float | None = None
             f"Eventos:\n" + "\n".join(ev_lines) + "\n\n"
             f"Estado da casa:\n{json.dumps(house, ensure_ascii=False)}\n\n"
             f"Dispositivos acionáveis:\n" + "\n".join(actionable) + "\n\n"
-            "Analisa e responde só com o JSON pedido.")
+            + (f"Memória (histórico, preferências com id, decisões semelhantes):\n{memory_text}\n\n" if memory_text else "")
+            + "Analisa e responde só com o JSON pedido.")
 
 
 def _decision_line(d) -> str:
@@ -122,7 +125,8 @@ def _decision_line(d) -> str:
 
 def build_coordinator_prompt(agent: str, reply: AgentReply, proposals: list, events: list[Event],
                              state: HomeState, recent: list, emergency_active: bool,
-                             priorities: dict[str, int], now: float | None = None) -> str:
+                             priorities: dict[str, int], now: float | None = None,
+                             prefs_notes: list[tuple[int, str]] | None = None) -> str:
     """The A2A message for the Coordinator agent: what happened, the house, what was decided
     recently, and the numbered proposals it must approve or reject.
     proposals: [(Proposal, description)] in the order the verdicts refer to (n = 1, 2, ...)."""
@@ -145,7 +149,9 @@ def build_coordinator_prompt(agent: str, reply: AgentReply, proposals: list, eve
             "Decisões recentes (últimos 5 min):\n" + "\n".join(recent_lines) + "\n\n"
             f"Análise do agente {agent}: {reply.resumo}\n\n"
             "Propostas a decidir:\n" + "\n".join(props) + "\n\n"
-            "Decide todas as propostas e responde só com o JSON pedido.")
+            + ("Preferências do utilizador (já verificadas em código):\n"
+               + "\n".join(f"{n}. {text}" for n, text in prefs_notes) + "\n\n" if prefs_notes else "")
+            + "Decide todas as propostas e responde só com o JSON pedido.")
 
 
 def _failed_task(response) -> str | None:
@@ -325,7 +331,8 @@ class AgentBridge:
     async def ask(self, key: str, client, batch: list[Event], state: HomeState) -> AgentReply | None:
         """One specialist call; its proposals then go to the Coordinator (consider -> arbiter)."""
         try:
-            reply = await self._call(key, client, build_prompt(batch, state), AgentReply)
+            reply = await self._call(key, client, build_prompt(batch, state, memory_text=self._memory_text(key, batch, state)),
+                                     AgentReply)
         except BadReply as e:  # the agent answered, but not something we can act on
             self.memory.add_decision(Decision(agent=AGENTS[key].name, status="erro",
                                               message=f"Resposta inválida do agente: {str(e)[:160]}"))
@@ -334,6 +341,18 @@ class AgentBridge:
             return None
         await asyncio.to_thread(self.coordinator.consider, AGENTS[key].name, reply, batch)
         return reply
+
+    def _memory_text(self, key: str, batch: list[Event], state: HomeState) -> str | None:
+        """The two memories for this agent (data history + preferences), or None without a database."""
+        mem = getattr(self.coordinator, "memories", None)
+        if mem is None:
+            return None
+        try:
+            from ..context import build_context, render_context
+            return render_context(build_context(key, batch[-1] if batch else None, state, mem))
+        except Exception as e:  # noqa: BLE001 - never block an agent on the context
+            log.warning("context for %s failed: %s", key, e)
+            return None
 
     # -- the Coordinator agent ---------------------------------------------------
     def arbitrate(self, prompt: str) -> CoordinatorReply:

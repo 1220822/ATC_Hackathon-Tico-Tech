@@ -18,6 +18,8 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
@@ -26,6 +28,7 @@ from .agents.specs import AGENTS
 from .config import Settings
 from .memory import Decision, SharedMemory
 from .perception.state import DeviceState, Event, HomeState, _num, de, em, hue_rgb
+from .prefs.models import CATEGORY_PT
 from .storage.decisions import decision_kind, map_status
 from .writes import UnknownDevice, guard_device, route_write
 
@@ -54,6 +57,42 @@ class RequestRefused(ValueError):
 
 
 AGENT_CATEGORY = {"Energia": "energia", "Conforto": "conforto", "Segurança": "seguranca"}
+TIE_AGENTS = frozenset({"Energia", "Conforto"})  # their conflicts are settled by the user's preferences
+
+
+@dataclass
+class _Prop:
+    ts: float
+    agent: str
+    device_id: str
+    acao: str
+    conflicts: list[str]
+    motivo: str = ""
+
+
+@dataclass
+class PrefVerdict:
+    """Outcome of decide(): ok=False drops the proposal; override lets it reverse a recent
+    higher-priority proposal because the preferences say so. notes are PT-PT sentences."""
+    ok: bool = True
+    override: bool = False
+    respects: list[dict] = field(default_factory=list)
+    conflicts: list[dict] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    other: _Prop | None = None
+
+    @property
+    def cited(self) -> list[str]:
+        return [r["id"] for r in self.respects + self.conflicts]
+
+    def proposals(self, agent: str, p) -> list[dict]:
+        """The debate, for decisions.proposals: this proposal (+ the opposite one, if any)."""
+        out = [{"agent": agent, **p.model_dump(), "respects_preferences": [r["id"] for r in self.respects],
+                "conflicts_with_preferences": [r["id"] for r in self.conflicts]}]
+        if self.other is not None:
+            out.append({"agent": self.other.agent, "device_id": self.other.device_id, "acao": self.other.acao,
+                        "motivo": self.other.motivo, "conflicts_with_preferences": self.other.conflicts})
+        return out
 
 
 def category_for(agent: str, dev: DeviceState | None) -> str:
@@ -83,12 +122,18 @@ def _what(dev: DeviceState, action: str) -> str:
 
 class Coordinator:
     def __init__(self, memory: SharedMemory, settings: Settings, mcp=None, sim=None,
-                 arbiter: Callable[[str], Any] | None = None, decisions=None):
+                 arbiter: Callable[[str], Any] | None = None, decisions=None, memories=None):
         """arbiter: prompt -> CoordinatorReply (the Coordinator LLM; set by AgentBridge.start()).
-        Without it, agent proposals are never executed."""
+        memories: src.context.Memories (history, events, decisions, preferences). Without it there
+        are no preferences and approved agent proposals run on their own (no autonomy levels)."""
         self.memory, self.s = memory, settings
         self.arbiter = arbiter
-        self.decisions = decisions  # src.storage.decisions.DecisionStore (None = not persisted)
+        self.memories = memories
+        # src.storage.decisions.DecisionStore (None = not persisted)
+        self.decisions = decisions if decisions is not None else (memories.decisions if memories else None)
+        self.prefs = memories.prefs if memories else None
+        self.on_pending: Callable[[dict], None] | None = None  # a decision now waits for the user
+        self._props: deque[_Prop] = deque(maxlen=100)  # recent agent proposals (for decide())
         self._arb_lock = threading.Lock()
         self._mcp = mcp  # write-enabled McpClient, created only when a real write is due
         self._sim = sim
@@ -174,9 +219,10 @@ class Coordinator:
 
     # -- 2. proposals of the LLM agents -------------------------------------------
     def consider(self, agent: str, reply, events: list[Event] | None = None) -> list[Decision]:
-        """reply: src.agents.specs.AgentReply. Records the agent's analysis; proposals that pass the
-        guardrails go to the Coordinator agent (LLM, via self.arbiter); the approved ones are
-        checked again against the latest state and executed."""
+        """reply: src.agents.specs.AgentReply. Records the agent's analysis; each proposal goes through
+        the hard guardrails, then decide() (preferences, Energia/Conforto conflicts), then the
+        Coordinator agent (LLM, via self.arbiter), then the guardrails again on the latest state and
+        finally the autonomy level of its category (execute / ask the user / only inform)."""
         state = self.memory.state
         if state is None:
             return []
@@ -195,18 +241,39 @@ class Coordinator:
             room=anchor.room_id if anchor else (trig.room if trig else None),
             room_name=anchor.room_name if anchor else (trig.room_name if trig else None),
             action={"propostas": [p.model_dump() for p in props]} if props else None))]
-        candidates: list[tuple[Any, DeviceState]] = []
+        candidates: list[tuple[Any, DeviceState, PrefVerdict]] = []
         for p in props:
-            checked = self._precheck(agent, p, state)
+            checked = self._precheck(agent, p, state, check_conflict=False)
             if isinstance(checked, Decision):
                 out.append(checked)
-            else:
-                candidates.append((p, checked))
+                if checked.status == "rejeitada":
+                    self._persist(status="vetoed", explanation=checked.message, dev=state.devices.get(p.device_id),
+                                  body={"type": "power", "value": p.acao}, trigger=trig, agent=agent,
+                                  proposals=[{"agent": agent, **p.model_dump()}])
+                continue
+            verdict = self.decide(agent, p, checked, state)
+            if not verdict.override:
+                blocked = self._precheck(agent, p, state)  # recent higher-priority action
+                if isinstance(blocked, Decision):
+                    out.append(blocked)
+                    self._persist(status="vetoed", explanation=blocked.message, dev=checked,
+                                  body={"type": "power", "value": p.acao}, trigger=trig, agent=agent,
+                                  proposals=[{"agent": agent, **p.model_dump()}])
+                    continue
+            if not verdict.ok:
+                body = {"type": "power", "value": p.acao}
+                text = f"Recuso a proposta {de(agent)} ({_what(checked, p.acao)}): " + " ".join(verdict.notes)
+                out.append(self.memory.add_decision(Decision(**self._common(checked, body), status="rejeitada",
+                                                             message=text)))
+                self._persist(status="rejected", explanation=text, dev=checked, body=body, trigger=trig, agent=agent,
+                              proposals=verdict.proposals(agent, p))
+                continue
+            candidates.append((p, checked, verdict))
         if candidates:
             out += self._arbitrate(agent, reply, candidates, events)
         return out
 
-    def _precheck(self, agent: str, p, state: HomeState) -> DeviceState | Decision:
+    def _precheck(self, agent: str, p, state: HomeState, check_conflict: bool = True) -> DeviceState | Decision:
         """Hard guardrails, before and after the LLM: known device, allowed action, online, not a
         no-op, no switching on during a smoke emergency, no reversing a recent higher-priority
         action. Returns the device, or the (recorded) Decision that stops the proposal."""
@@ -232,7 +299,7 @@ class Coordinator:
             return self.memory.add_decision(Decision(
                 **common, status="rejeitada",
                 message=f"{of} recusada ({_what(dev, p.acao)}): há uma emergência de fumo ativa."))
-        clash = self._conflict(dev.id, p.acao, agent, time.time())
+        clash = self._conflict(dev.id, p.acao, agent, time.time()) if check_conflict else None
         if clash:
             src, age = clash
             return self.memory.add_decision(Decision(
@@ -250,9 +317,100 @@ class Coordinator:
         return [d for d in self.memory.recent_decisions(40)
                 if now - d.ts <= CONFLICT_WINDOW_S and d.status != "informação"][-12:]
 
+    # -- decide(): preferences and conflicts between Energia and Conforto ------------------
+    def evaluate_prefs(self, agent: str, p, dev: DeviceState, state: HomeState,
+                       when: datetime | None = None) -> tuple[list[dict], list[dict]]:
+        """(respected, conflicting) active preferences for one proposal. Computed in code from the
+        real temperature; ids the agent cited are added only if they exist and apply."""
+        if self.prefs is None:
+            return [], []
+        from .context import applicable_prefs
+        when = when or datetime.now()
+        applicable = {r["id"]: r for r in applicable_prefs(self.prefs, state, [dev.room_id])}
+        respects: dict[str, dict] = {}
+        conflicts: dict[str, dict] = {}
+        if dev.role == "plug":  # the plug is the heater
+            temp = _num(state.cap("temperature", "temperatureValue", room=dev.room_id))
+            if temp is None:
+                temp = state.temperature
+            target, sp = self.prefs.setpoint(dev.room_id, when)
+            if temp is not None and target is not None and sp is not None:
+                if p.acao == "on":
+                    (respects if temp < target else conflicts if temp >= target + 0.5 else {})[sp["id"]] = sp
+                else:
+                    (conflicts if temp < target - 0.5 else respects if temp >= target else {})[sp["id"]] = sp
+            rng, cr = self.prefs.comfort_range(dev.room_id)
+            if temp is not None and rng is not None:
+                lo, hi = rng
+                if p.acao == "off" and temp < lo:
+                    conflicts[cr["id"]] = cr
+                elif p.acao == "on" and temp > hi:
+                    conflicts[cr["id"]] = cr
+                elif lo <= temp <= hi or (p.acao == "on" and temp < lo) or (p.acao == "off" and temp > hi):
+                    respects[cr["id"]] = cr
+        for pid in getattr(p, "respects_preferences", []) or []:
+            if pid in applicable and pid not in conflicts:
+                respects[pid] = applicable[pid]
+        for pid in getattr(p, "conflicts_with_preferences", []) or []:
+            if pid in applicable and pid not in respects:
+                conflicts[pid] = applicable[pid]
+        return list(respects.values()), list(conflicts.values())
+
+    def decide(self, agent: str, p, dev: DeviceState, state: HomeState, now: float | None = None) -> "PrefVerdict":
+        """Preferences first, then priority: when Energia and Conforto want opposite things for the same
+        device (within CONFLICT_WINDOW_S), the proposal that respects the user's preferences wins; if
+        both or neither do, the higher priority wins (Energia > Conforto). The notes cite the preferences."""
+        from .context import describe_pref
+        now = time.time() if now is None else now
+        respects, conflicts = self.evaluate_prefs(agent, p, dev, state)
+        notes: list[str] = []
+        if respects:
+            notes.append("Respeita a tua preferência: " + "; ".join(f"{describe_pref(r)} [{r['id']}]" for r in respects) + ".")
+        if conflicts:
+            notes.append("Vai contra a tua preferência: " + "; ".join(f"{describe_pref(r)} [{r['id']}]" for r in conflicts) + ".")
+        ok, override, other = True, False, None
+        if agent in TIE_AGENTS:
+            with self._lock:
+                for prop in reversed(self._props):
+                    if prop.device_id == dev.id and prop.acao != p.acao and prop.agent != agent \
+                            and prop.agent in TIE_AGENTS and now - prop.ts <= CONFLICT_WINDOW_S:
+                        other = prop
+                        break
+        if other is not None:
+            other_what = _what(dev, other.acao)
+            if conflicts and not other.conflicts:
+                ok = False
+                notes.append(f"A proposta {de(other.agent)} ({other_what}) respeita as tuas preferências e esta não.")
+            elif other.conflicts and not conflicts:
+                override = True
+                notes.append(f"Contraria a proposta {de(other.agent)} ({other_what}), mas as tuas preferências "
+                             "desempatam a favor desta.")
+            elif PRIORITY.get(agent, 9) > PRIORITY.get(other.agent, 9):
+                ok = False
+                notes.append(f"Sem preferência que desempate, prevalece a proposta {de(other.agent)} ({other_what}) "
+                             "por prioridade.")
+            else:
+                override = True
+                notes.append(f"Sem preferência que desempate, prevalece esta proposta por prioridade sobre a "
+                             f"{de(other.agent)} ({other_what}).")
+        verdict = PrefVerdict(ok=ok, override=override, respects=respects, conflicts=conflicts, notes=notes,
+                              other=other)
+        with self._lock:
+            self._props.append(_Prop(now, agent, dev.id, p.acao, [c["id"] for c in conflicts],
+                                     getattr(p, "motivo", "")))
+        return verdict
+
+    def autonomy(self, category: str) -> str:
+        """auto | perguntar | nunca. Without a preference memory (tests, old setups) agent proposals
+        approved by the Coordinator run on their own, as before."""
+        if self.prefs is None:
+            return "auto"
+        return self.prefs.autonomy(category)
+
     def _arbitrate(self, agent: str, reply, candidates: list, events: list[Event]) -> list[Decision]:
         """Ask the Coordinator agent (one call for this agent's proposals; one arbitration at a time,
-        so the next one sees this one's outcome). Without a valid answer nothing is executed."""
+        so the next one sees this one's outcome). Without a valid answer nothing runs on its own: with
+        a preference memory the user is asked, without one the proposal is dropped."""
         from .agents.bridge import build_coordinator_prompt
         from .agents.specs import BadReply
         with self._arb_lock:
@@ -263,8 +421,9 @@ class Coordinator:
                 failure = "Coordenador LLM não está ligado (agentes desligados)"
             else:
                 prompt = build_coordinator_prompt(
-                    agent, reply, [(p, _what(dev, p.acao)) for p, dev in candidates], events, state,
-                    self._recent(time.time()), self.emergency_active, PRIORITY)
+                    agent, reply, [(p, _what(dev, p.acao)) for p, dev, _ in candidates], events, state,
+                    self._recent(time.time()), self.emergency_active, PRIORITY,
+                    prefs_notes=[(n, " ".join(v.notes)) for n, (_, _, v) in enumerate(candidates, 1) if v.notes])
                 try:
                     verdicts = {v.n: v for v in self.arbiter(prompt).decisoes}
                 except BadReply as e:
@@ -272,48 +431,96 @@ class Coordinator:
                 except Exception as e:  # noqa: BLE001 - down, timeout
                     failure = f"Coordenador LLM indisponível ({type(e).__name__})"
             out = []
-            for n, (p, dev) in enumerate(candidates, 1):
+            trig = events[-1] if events else None
+            for n, (p, dev, pv) in enumerate(candidates, 1):
                 body = {"type": "power", "value": p.acao}
                 what = _what(dev, p.acao)
                 v = verdicts.get(n)
-                trig = events[-1] if events else None
-                prop = [{"agent": agent, **p.model_dump()}]
+                props = pv.proposals(agent, p)
                 if failure or v is None:
                     why = failure or "o Coordenador LLM não decidiu esta proposta"
+                    if self.prefs is not None:  # nothing runs alone: the user decides
+                        out.append(self._gate(agent, p, dev, body, trig, pv, motivo="", force_ask=True,
+                                              extra=f"Não consegui confirmar com o Coordenador LLM ({why})."))
+                        continue
                     d = self.memory.add_decision(Decision(
                         **self._common(dev, body), status="erro" if failure else "rejeitada",
                         message=f"Proposta {de(agent)} ({what}) não executada: {why}."))
                     out.append(d)
                     self._persist(status="rejected", explanation=d.message, dev=dev, body=body, trigger=trig,
-                                  agent=agent, proposals=prop)
+                                  agent=agent, proposals=props)
                     continue
                 motivo = (v.motivo or "").strip().rstrip(".")
                 if not v.aprovar:
                     d = self.memory.add_decision(Decision(
                         **self._common(dev, body), status="rejeitada",
-                        message=f"Recuso a proposta {de(agent)} ({what})" + (f": {motivo}." if motivo else ".")))
+                        message=f"Recuso a proposta {de(agent)} ({what})" + (f": {motivo}." if motivo else ".")
+                                + (" " + " ".join(pv.notes) if pv.notes else "")))
                     out.append(d)
                     self._persist(status="rejected", explanation=d.message, dev=dev, body=body, trigger=trig,
-                                  agent=agent, proposals=prop)
+                                  agent=agent, proposals=props)
                     continue
                 fresh = self.memory.state or state  # the house may have changed while the LLM thought
-                checked = self._precheck(agent, p, fresh)
+                checked = self._precheck(agent, p, fresh, check_conflict=not pv.override)
                 if isinstance(checked, Decision):
                     out.append(checked)
                     if checked.status == "rejeitada":
                         self._persist(status="vetoed", explanation=checked.message, dev=dev, body=body,
-                                      trigger=trig, agent=agent, proposals=prop)
+                                      trigger=trig, agent=agent, proposals=props)
                     continue
-                status, note = self._run(fresh, checked, body)
-                if status != "erro":
-                    self._remember(checked.id, p.acao, agent)
-                d = self.memory.add_decision(Decision(
-                    **self._common(checked, body), status=status,
-                    message=f"Aprovo a proposta {de(agent)}: {what}." + (f" {motivo}." if motivo else "") + f" {note}"))
-                out.append(d)
-                self._persist(status=map_status(status), explanation=d.message, dev=checked, body=body,
-                              trigger=trig, agent=agent, proposals=prop, autonomy="auto")
+                out.append(self._gate(agent, p, checked, body, trig, pv, motivo=motivo,
+                                      force_ask=bool(pv.conflicts), state=fresh))
             return out
+
+    def _gate(self, agent: str, p, dev: DeviceState, body: dict, trig: Event | None, pv: "PrefVerdict",
+              motivo: str, force_ask: bool = False, extra: str = "", state: HomeState | None = None) -> Decision:
+        """Autonomy level of the action's category: auto -> execute (DRY_RUN respected);
+        perguntar -> pending decision shown in the chat; nunca -> only recorded and reported.
+        force_ask (goes against a preference, or the LLM could not confirm) turns auto into perguntar."""
+        category = category_for(agent, dev)
+        level = self.autonomy(category)
+        if force_ask and level == "auto":
+            level = "perguntar"
+        what = _what(dev, p.acao)
+        why = " ".join(x for x in [
+            f"{trig.message}" if trig is not None else "",
+            f"{agent} propõe {what}" + (f": {p.motivo.strip().rstrip('.')}." if getattr(p, "motivo", "") else "."),
+            " ".join(pv.notes), f"Coordenador: {motivo}." if motivo else "", extra] if x).strip()
+        props = pv.proposals(agent, p)
+        if level == "auto":
+            status, note = self._run(state or self.memory.state, dev, body)
+            if status != "erro":
+                self._remember(dev.id, p.acao, agent)
+            d = self.memory.add_decision(Decision(
+                **self._common(dev, body), status=status,
+                message=f"Aprovo a proposta {de(agent)}: {what}." + (f" {motivo}." if motivo else "")
+                        + (" " + " ".join(pv.notes) if pv.notes else "") + f" {note}"))
+            self._persist(status=map_status(status), explanation=f"{why} {note}".strip(), dev=dev, body=body,
+                          trigger=trig, agent=agent, proposals=props, autonomy="auto")
+            return d
+        if level == "perguntar":
+            kind = decision_kind(trig.type if trig else None, dev.id, body)
+            if self.decisions is not None and any(x["kind"] == kind for x in self.decisions.pending()):
+                return self.memory.add_decision(Decision(**self._common(dev, body), status="informação",
+                                                         message=f"Já estou à espera da tua resposta para {what}."))
+            rec = self._persist(status="pending", explanation=why, dev=dev, body=body, trigger=trig, agent=agent,
+                                proposals=props, autonomy="perguntar")
+            d = self.memory.add_decision(Decision(
+                **self._common(dev, body), status="proposta",
+                message=f"Proposta {de(agent)}: {what}. À espera da tua aprovação no chat."))
+            if rec is not None and self.on_pending is not None:
+                try:
+                    self.on_pending(rec)
+                except Exception:  # noqa: BLE001
+                    log.exception("on_pending failed")
+            return d
+        self._persist(status="rejected", explanation=f"{why} Não executado: autonomia «nunca» para "
+                      f"{CATEGORY_PT.get(category, category)}.", dev=dev, body=body, trigger=trig, agent=agent,
+                      proposals=props, autonomy="nunca")
+        return self.memory.add_decision(Decision(
+            **self._common(dev, body), status="informação",
+            message=f"Proposta {de(agent)} ({what}) não executada: pediste para eu nunca agir em "
+                    f"{CATEGORY_PT.get(category, category)}. Fica registada."))
 
     # -- 3. fixed rules (deterministic, no LLM): smoke and intrusion -----------------
     FIXED_RULE_EVENTS = ("smoke_detected", "security_alarm", "alarm_cancelled")

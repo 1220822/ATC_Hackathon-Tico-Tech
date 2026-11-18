@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import Settings, get_settings
+from .context import Memories
 from .coordinator import Coordinator, RequestRefused, UserRequest
 from .memory import SharedMemory
 from .perception.state import HomeState, RoomState, _num
@@ -282,7 +283,8 @@ def main() -> None:
     recorder = HistoryRecorder(memory, History(settings.history_db), settings.store_interval_s)
     # every bus event goes to the events table (only while this process holds the writer lease)
     bus.subscribe(EventStore(settings.history_db, is_writer=lambda: not recorder.standby).on_event)
-    coordinator = Coordinator(memory, settings, decisions=DecisionStore(settings.history_db))
+    memories = Memories.open(settings.history_db)  # data history + preferences (var/home.db)
+    coordinator = Coordinator(memory, settings, memories=memories)
     # fixed rules, straight from the bus, never through an LLM: smoke and intrusion
     bus.subscribe(coordinator.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
     vision_worker = None

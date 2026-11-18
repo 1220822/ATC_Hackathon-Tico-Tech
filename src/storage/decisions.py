@@ -111,10 +111,19 @@ class DecisionStore(SqliteStore):
                 self.rows("SELECT * FROM decisions WHERE status = 'pending' AND user_response IS NULL ORDER BY ts")]
 
     def similar(self, kind: str | None = None, room: str | None = None, device_id: str | None = None,
-                n: int = 3) -> list[dict]:
-        """Latest decisions of the same kind (or else the same device / room), newest first."""
+                n: int = 3, trigger_type: str | None = None) -> list[dict]:
+        """Latest decisions of the same kind (else same trigger type in the room, same device, same
+        room), newest first."""
         if kind:
             found = self.rows("SELECT * FROM decisions WHERE kind = ? ORDER BY ts DESC LIMIT ?", (kind, n))
+            if found:
+                return [self._decode(r) for r in found]
+        if trigger_type:
+            sql, args = "SELECT * FROM decisions WHERE json_extract(trigger, '$.type') = ?", [trigger_type]
+            if room:
+                sql += " AND room = ?"
+                args.append(room)
+            found = self.rows(sql + " ORDER BY ts DESC LIMIT ?", args + [n])
             if found:
                 return [self._decode(r) for r in found]
         if device_id:

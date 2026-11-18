@@ -34,9 +34,15 @@ Regras:
   a divisão de cada coisa.
 - Se não houver nada a fazer, devolve "propostas": [].
 - O "resumo" descreve a situação numa frase; não repitas nele as propostas (vão no campo "propostas").
+- A secção "Memória" traz o histórico da casa (tendência das últimas 2 h, consumos, eventos), as
+  preferências ativas do utilizador (cada uma com um id) e as últimas decisões semelhantes com a resposta
+  do utilizador. Respeita as preferências; se uma proposta for contra uma, diz qual. Se o utilizador
+  rejeitou decisões iguais, não insistas sem um facto novo.
+- Em cada proposta, "respects_preferences" e "conflicts_with_preferences" são listas de ids de
+  preferências da Memória (vazias se nenhuma se aplica). Nunca inventes ids.
 
 Responde APENAS com um objeto JSON, sem texto antes nem depois:
-{"resumo": "<uma frase para a linha do tempo>", "propostas": [{"device_id": "<id>", "acao": "on" ou "off", "motivo": "<frase curta>"}]}
+{"resumo": "<uma frase para a linha do tempo>", "propostas": [{"device_id": "<id>", "acao": "on" ou "off", "motivo": "<frase curta>", "respects_preferences": [], "conflicts_with_preferences": []}]}
 """
 
 COORDINATOR_RULES = """
@@ -55,6 +61,8 @@ Como decidir:
 - Não contraries uma ação recente (secção "Decisões recentes") de quem tem mais prioridade, nem
   ligues e desligues o mesmo aparelho em pouco tempo.
 - Se duas propostas se contradizem, aprova no máximo uma.
+- As preferências do utilizador (secção "Preferências") desempatam entre Conforto e Energia: aprova a
+  proposta que as respeita e cita a preferência no motivo.
 - Não sabes se há pessoas em casa além do que os dados dizem.
 
 Regras:
@@ -126,6 +134,8 @@ class Proposal(BaseModel):
     device_id: str = Field(min_length=1)
     acao: Literal["on", "off"]
     motivo: str = Field("", max_length=300)
+    respects_preferences: list[str] = Field(default_factory=list, max_length=10)  # preference ids
+    conflicts_with_preferences: list[str] = Field(default_factory=list, max_length=10)
 
 
 class AgentReply(BaseModel):
