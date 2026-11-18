@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.agents import bridge as bridge_mod
 from src.agents.bridge import AgentBridge, build_prompt, route
-from src.agents.specs import AgentReply
+from src.agents.specs import AgentReply, BadReply, CoordinatorReply
 from src.config import get_settings
 from src.coordinator import Coordinator
 from src.memory import EventBus, SharedMemory
@@ -24,6 +24,24 @@ SALA = "e50aa04b-3ca3-443e-9d54-3e504bc7d7a1"
 def reply(*props, resumo="Janela aberta na Sala com o aquecedor do Quarto ligado."):
     return AgentReply.model_validate({"resumo": resumo, "propostas": [
         {"device_id": d, "acao": a, "motivo": "teste"} for d, a in props]})
+
+
+def verdicts(*items, resumo="Decidido."):
+    """CoordinatorReply from (aprovar, motivo) per proposal, in order."""
+    return CoordinatorReply.model_validate({"resumo": resumo, "decisoes": [
+        {"n": i, "aprovar": a, "motivo": m} for i, (a, m) in enumerate(items, 1)]})
+
+
+class FakeArbiter:
+    """Stands in for the Coordinator LLM: records prompts, answers with `answer(prompt)`."""
+
+    def __init__(self, answer=None):
+        self.prompts = []
+        self.answer = answer or (lambda prompt: verdicts(*[(True, "faz sentido")] * prompt.count(" -> ")))
+
+    def __call__(self, prompt):
+        self.prompts.append(prompt)
+        return self.answer(prompt)
 
 
 def dropping():
@@ -50,7 +68,8 @@ class HouseTestCase(unittest.TestCase):
         self.home.set_contact(True)
         self.memory, self.bus = SharedMemory(), EventBus()
         self.refresh()
-        self.coord = Coordinator(self.memory, self.s, sim=self.home)
+        self.arbiter = FakeArbiter()
+        self.coord = Coordinator(self.memory, self.s, sim=self.home, arbiter=self.arbiter)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -104,8 +123,64 @@ class TestConsider(HouseTestCase):
         self.assertIn("Proponho desligar a tomada do Quarto", out[0].message)
         self.assertEqual((out[1].agent, out[1].status), ("Coordenador", "dry-run"))
         self.assertIn("Aprovo a proposta da Energia", out[1].message)
+        self.assertIn("faz sentido", out[1].message)
         self.refresh()
         self.assertTrue(self.memory.state.plug_on)  # dry-run: nothing written
+        prompt = self.arbiter.prompts[0]
+        self.assertIn(f"1. Energia: desligar a tomada do Quarto ({PLUG} -> off)", prompt)
+        self.assertIn("Prioridades (mais forte primeiro): Emergência > Utilizador > Segurança > Energia > Conforto", prompt)
+        self.assertIn("A temperatura no Quarto está a descer", prompt)
+        self.assertIn("Decisões recentes", prompt)
+
+    def test_llm_rejects(self):
+        self.arbiter.answer = lambda prompt: verdicts((False, "não há provas de desperdício"))
+        out = self.coord.consider("Energia", reply((PLUG, "off")), [dropping()])
+        self.assertEqual(out[1].status, "rejeitada")
+        self.assertIn("Recuso a proposta da Energia (desligar a tomada do Quarto): não há provas", out[1].message)
+
+    def test_one_of_two(self):
+        self.arbiter.answer = lambda prompt: verdicts((True, "ok"), (False, "pode haver alguém"))
+        out = self.coord.consider("Energia", reply((PLUG, "off"), (LIGHT, "off")), [dropping()])
+        self.assertEqual([d.status for d in out[1:]], ["dry-run", "rejeitada"])
+        self.assertIn("2. Energia: desligar a luz do Quarto", self.arbiter.prompts[0])
+
+    def test_missing_verdict_is_not_executed(self):
+        self.arbiter.answer = lambda prompt: verdicts()
+        out = self.coord.consider("Energia", reply((PLUG, "off")))
+        self.assertEqual(out[1].status, "rejeitada")
+        self.assertIn("não decidiu esta proposta", out[1].message)
+
+    def test_without_llm_nothing_runs(self):
+        self.coord.arbiter = None
+        out = self.coord.consider("Energia", reply((PLUG, "off")))
+        self.assertEqual(out[1].status, "erro")
+        self.assertIn("Coordenador LLM não está ligado", out[1].message)
+
+        def down(prompt):
+            raise ConnectionError("x")
+        self.coord.arbiter = down
+        self.assertIn("Coordenador LLM indisponível", self.coord.consider("Energia", reply((PLUG, "off")))[1].message)
+
+        def bad(prompt):
+            raise BadReply("o agente não devolveu JSON")
+        self.coord.arbiter = bad
+        self.assertIn("resposta inválida do Coordenador LLM", self.coord.consider("Energia", reply((PLUG, "off")))[1].message)
+
+    def test_guardrails_after_approval(self):
+        def approve_during_smoke(prompt):  # the house changes while the LLM thinks
+            self.coord.emergency_active = True
+            return verdicts((True, "frio"))
+        self.home.set_plug(False)
+        self.refresh()
+        self.arbiter.answer = approve_during_smoke
+        out = self.coord.consider("Conforto", reply((PLUG, "on")))
+        self.assertEqual(out[1].status, "rejeitada")
+        self.assertIn("emergência de fumo", out[1].message)
+
+    def test_guardrails_do_not_ask_the_llm(self):
+        self.coord.consider("Conforto", reply((PLUG, "on")))  # no-op
+        self.coord.consider("Segurança", reply(("inventado", "on")))
+        self.assertEqual(self.arbiter.prompts, [])
 
     def test_invalid_proposals_rejected(self):
         out = self.coord.consider("Segurança", reply(("inventado", "on"), (HUB, "off")))
@@ -186,8 +261,9 @@ class TestBridgeOverA2A(HouseTestCase):
         bridge_mod.BATCH_S = self._batch
         super().tearDown()
 
-    def start_bridge(self, url):
-        return AgentBridge(self.memory, self.s, self.coord, self.bus, urls={"energia": url}).start()
+    def start_bridge(self, url, coordinator_url=None):
+        return AgentBridge(self.memory, self.s, self.coord, self.bus, urls={"energia": url},
+                           coordinator_url=coordinator_url or f"http://127.0.0.1:{free_port()}/").start()
 
     def wait(self, cond, timeout=15):
         t0 = time.time()
@@ -201,17 +277,43 @@ class TestBridgeOverA2A(HouseTestCase):
         chat = FakeChat(json.dumps({"resumo": "Aquecedor do Quarto ligado com a janela da Sala aberta.",
                                     "propostas": [{"device_id": PLUG, "acao": "off", "motivo": "desperdício"}]},
                                    ensure_ascii=False))
-        with A2AServer("energia", chat) as srv:
-            br = self.start_bridge(srv.url)
+        boss = FakeChat(json.dumps({"resumo": "Janela aberta: desligar o aquecedor.",
+                                    "decisoes": [{"n": 1, "aprovar": True, "motivo": "a janela está aberta"}]},
+                                   ensure_ascii=False))
+        with A2AServer("energia", chat) as srv, A2AServer("coordenador", boss) as coord_srv:
+            br = self.start_bridge(srv.url, coord_srv.url)
+            self.assertIs(self.coord.arbiter.__self__, br)
             self.bus.publish([dropping()])
             self.assertTrue(self.wait(lambda: self.decisions("Coordenador")))
             br.stop()
+        self.assertIsNone(self.coord.arbiter)
         self.assertIn("A temperatura no Quarto está a descer", chat.prompts[0])
+        self.assertIn("agente de Energia", chat.prompts[0])
+        self.assertIn("És o Coordenador", boss.prompts[0])  # the Coordinator's instructions reached its LLM
+        self.assertIn(f"1. Energia: desligar a tomada do Quarto ({PLUG} -> off)", boss.prompts[0])
         self.assertEqual(self.decisions("Energia")[0].status, "proposta")
-        self.assertEqual(self.decisions("Coordenador")[0].status, "dry-run")
-        status = {a["key"]: a for a in self.memory.agent_status()}["energia"]
-        self.assertTrue(status["online"])
-        self.assertFalse(status["busy"])
+        d = self.decisions("Coordenador")[0]
+        self.assertEqual(d.status, "dry-run")
+        self.assertIn("a janela está aberta", d.message)
+        status = {a["key"]: a for a in self.memory.agent_status()}
+        self.assertEqual(list(status)[0], "coordenador")  # first chip in the UI
+        for key in ("energia", "coordenador"):
+            self.assertTrue(status[key]["online"])
+            self.assertFalse(status[key]["busy"])
+
+    def test_coordinator_down_nothing_executed(self):
+        chat = FakeChat(json.dumps({"resumo": "Aquecedor ligado com a janela aberta.",
+                                    "propostas": [{"device_id": PLUG, "acao": "off", "motivo": "x"}]}))
+        with A2AServer("energia", chat) as srv:
+            br = self.start_bridge(srv.url)  # nothing listens on the Coordinator's port
+            self.bus.publish([dropping()])
+            self.assertTrue(self.wait(lambda: self.decisions("Coordenador")))
+            br.stop()
+        d = self.decisions("Coordenador")[0]
+        self.assertEqual(d.status, "erro")
+        self.assertIn("Coordenador LLM indisponível", d.message)
+        self.assertIn("Agente Coordenador indisponível", self.decisions("Sistema")[0].message)
+        self.assertFalse({a["key"]: a for a in self.memory.agent_status()}["coordenador"]["online"])
 
     def test_failed_task_is_reported_not_acted_on(self):
         with A2AServer("energia", FakeChat(error="modelo indisponível")) as srv:

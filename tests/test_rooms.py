@@ -149,9 +149,17 @@ class TestSimulatedRooms(RoomsTestCase):
 
 
 class TestHybridSource(RoomsTestCase):
+    def test_real_only_by_default(self):
+        src = HybridSource(self.s.model_copy(update={"simulate": False, "sim_rooms": False}), client=FakeMcp(),
+                           config=self.cfg)
+        self.assertEqual(src.name, "mcp")
+        self.assertIsNone(src.sim)
+        names = {r.name for r in normalize(src.fetch(), self.s).rooms.values()}
+        self.assertNotIn("Cozinha", names)
+
     def test_real_plus_simulated(self):
         mcp = FakeMcp()
-        src = HybridSource(self.s.model_copy(update={"simulate": False}), client=mcp, config=self.cfg)
+        src = HybridSource(self.s.model_copy(update={"simulate": False, "sim_rooms": True}), client=mcp, config=self.cfg)
         self.assertEqual(src.name, "mcp+sim")
         st = normalize(src.fetch(), self.s)
         self.assertEqual([r.name for r in st.rooms.values()], ["Sala", "Quarto", "Cozinha"])
@@ -161,7 +169,7 @@ class TestHybridSource(RoomsTestCase):
         self.assertEqual({t for t, _ in mcp.calls}, {"get_home", "get_home_security_alarm_history"})
 
     def test_simulated_alarm_is_merged(self):
-        src = HybridSource(self.s.model_copy(update={"simulate": False}), client=FakeMcp(), config=self.cfg)
+        src = HybridSource(self.s.model_copy(update={"simulate": False, "sim_rooms": True}), client=FakeMcp(), config=self.cfg)
         a = normalize(src.fetch(), self.s)
         self.home.smoke(room="Cozinha")
         ev = next(e for e in diff(a, normalize(src.fetch(), self.s), self.s) if e.type == "smoke_detected")
@@ -178,7 +186,7 @@ class TestRouteWrite(RoomsTestCase):
     def setUp(self):
         super().setUp()
         self.mcp = FakeMcp()
-        src = HybridSource(self.s.model_copy(update={"simulate": False}), client=self.mcp, config=self.cfg)
+        src = HybridSource(self.s.model_copy(update={"simulate": False, "sim_rooms": True}), client=self.mcp, config=self.cfg)
         self.state = normalize(src.fetch(), self.s)
         self.mcp.calls.clear()
 

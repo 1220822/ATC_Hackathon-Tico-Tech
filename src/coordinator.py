@@ -5,8 +5,9 @@ outcome recorded as a Decision in SharedMemory (UI timeline / 3D balloons):
 
   1. user requests from the UI (POST /coordinator/request): power on/off of a light or plug;
   2. proposals of the LLM agents (Segurança, Energia, Conforto) received over A2A by
-     src.agents.bridge -> consider(): checked device by device and arbitrated by priority
-     (Emergência > Utilizador > Segurança > Energia > Conforto);
+     src.agents.bridge -> consider(): hard guardrails, then the Coordinator agent (LLM, over A2A,
+     self.arbiter) approves or rejects each one, then the guardrails again on the latest state
+     (priority Emergência > Utilizador > Segurança > Energia > Conforto) and execute();
   3. smoke: a deterministic emergency path (on_event) that never goes through an LLM.
 
 Security (arm/disarm) is never written from here.
@@ -16,7 +17,7 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -54,8 +55,13 @@ def _what(dev: DeviceState, action: str) -> str:
 
 
 class Coordinator:
-    def __init__(self, memory: SharedMemory, settings: Settings, mcp=None, sim=None):
+    def __init__(self, memory: SharedMemory, settings: Settings, mcp=None, sim=None,
+                 arbiter: Callable[[str], Any] | None = None):
+        """arbiter: prompt -> CoordinatorReply (the Coordinator LLM; set by AgentBridge.start()).
+        Without it, agent proposals are never executed."""
         self.memory, self.s = memory, settings
+        self.arbiter = arbiter
+        self._arb_lock = threading.Lock()
         self._mcp = mcp  # write-enabled McpClient, created only when a real write is due
         self._sim = sim
         self._lock = threading.Lock()  # one write at a time
@@ -111,8 +117,9 @@ class Coordinator:
 
     # -- 2. proposals of the LLM agents -------------------------------------------
     def consider(self, agent: str, reply, events: list[Event] | None = None) -> list[Decision]:
-        """reply: src.agents.specs.AgentReply. Records the agent's analysis, then decides on each
-        proposal (guard, emergency, conflicts by priority, no-ops) and executes the approved ones."""
+        """reply: src.agents.specs.AgentReply. Records the agent's analysis; proposals that pass the
+        guardrails go to the Coordinator agent (LLM, via self.arbiter); the approved ones are
+        checked again against the latest state and executed."""
         state = self.memory.state
         if state is None:
             return []
@@ -131,11 +138,21 @@ class Coordinator:
             room=anchor.room_id if anchor else (trig.room if trig else None),
             room_name=anchor.room_name if anchor else (trig.room_name if trig else None),
             action={"propostas": [p.model_dump() for p in props]} if props else None))]
+        candidates: list[tuple[Any, DeviceState]] = []
         for p in props:
-            out.append(self._arbitrate(agent, p, state))
+            checked = self._precheck(agent, p, state)
+            if isinstance(checked, Decision):
+                out.append(checked)
+            else:
+                candidates.append((p, checked))
+        if candidates:
+            out += self._arbitrate(agent, reply, candidates, events)
         return out
 
-    def _arbitrate(self, agent: str, p, state: HomeState) -> Decision:
+    def _precheck(self, agent: str, p, state: HomeState) -> DeviceState | Decision:
+        """Hard guardrails, before and after the LLM: known device, allowed action, online, not a
+        no-op, no switching on during a smoke emergency, no reversing a recent higher-priority
+        action. Returns the device, or the (recorded) Decision that stops the proposal."""
         body = {"type": "power", "value": p.acao}
         of = f"Proposta {de(agent)}"
         try:
@@ -149,8 +166,7 @@ class Coordinator:
             return self.memory.add_decision(Decision(
                 agent="Coordenador", message=f"{of} recusada: {e}.", device_id=p.device_id,
                 room=d.room_id if d else None, room_name=d.room_name if d else None, action=body, status="rejeitada"))
-        common = {"agent": "Coordenador", "device_id": dev.id, "room": dev.room_id, "room_name": dev.room_name,
-                  "action": body}
+        common = self._common(dev, body)
         if dev.caps.get("power") == p.acao:
             return self.memory.add_decision(Decision(
                 **common, status="informação",
@@ -166,11 +182,67 @@ class Coordinator:
                 **common, status="rejeitada",
                 message=f"{of} recusada ({_what(dev, p.acao)}): {src} decidiu o contrário há "
                         f"{int(age // 60)} min {int(age % 60)} s e tem prioridade."))
-        status, note = self._run(state, dev, body)
-        if status != "erro":
-            self._remember(dev.id, p.acao, agent)
-        return self.memory.add_decision(Decision(
-            **common, status=status, message=f"Aprovo a proposta {de(agent)}: {_what(dev, p.acao)}. {note}"))
+        return dev
+
+    @staticmethod
+    def _common(dev: DeviceState, body: dict) -> dict:
+        return {"agent": "Coordenador", "device_id": dev.id, "room": dev.room_id, "room_name": dev.room_name,
+                "action": body}
+
+    def _recent(self, now: float) -> list[Decision]:
+        return [d for d in self.memory.recent_decisions(40)
+                if now - d.ts <= CONFLICT_WINDOW_S and d.status != "informação"][-12:]
+
+    def _arbitrate(self, agent: str, reply, candidates: list, events: list[Event]) -> list[Decision]:
+        """Ask the Coordinator agent (one call for this agent's proposals; one arbitration at a time,
+        so the next one sees this one's outcome). Without a valid answer nothing is executed."""
+        from .agents.bridge import build_coordinator_prompt
+        from .agents.specs import BadReply
+        with self._arb_lock:
+            state = self.memory.state
+            failure = None
+            verdicts: dict[int, Any] = {}
+            if self.arbiter is None:
+                failure = "Coordenador LLM não está ligado (agentes desligados)"
+            else:
+                prompt = build_coordinator_prompt(
+                    agent, reply, [(p, _what(dev, p.acao)) for p, dev in candidates], events, state,
+                    self._recent(time.time()), self.emergency_active, PRIORITY)
+                try:
+                    verdicts = {v.n: v for v in self.arbiter(prompt).decisoes}
+                except BadReply as e:
+                    failure = f"resposta inválida do Coordenador LLM ({str(e)[:120]})"
+                except Exception as e:  # noqa: BLE001 - down, timeout
+                    failure = f"Coordenador LLM indisponível ({type(e).__name__})"
+            out = []
+            for n, (p, dev) in enumerate(candidates, 1):
+                body = {"type": "power", "value": p.acao}
+                what = _what(dev, p.acao)
+                v = verdicts.get(n)
+                if failure or v is None:
+                    why = failure or "o Coordenador LLM não decidiu esta proposta"
+                    out.append(self.memory.add_decision(Decision(
+                        **self._common(dev, body), status="erro" if failure else "rejeitada",
+                        message=f"Proposta {de(agent)} ({what}) não executada: {why}.")))
+                    continue
+                motivo = (v.motivo or "").strip().rstrip(".")
+                if not v.aprovar:
+                    out.append(self.memory.add_decision(Decision(
+                        **self._common(dev, body), status="rejeitada",
+                        message=f"Recuso a proposta {de(agent)} ({what})" + (f": {motivo}." if motivo else "."))))
+                    continue
+                fresh = self.memory.state or state  # the house may have changed while the LLM thought
+                checked = self._precheck(agent, p, fresh)
+                if isinstance(checked, Decision):
+                    out.append(checked)
+                    continue
+                status, note = self._run(fresh, checked, body)
+                if status != "erro":
+                    self._remember(checked.id, p.acao, agent)
+                out.append(self.memory.add_decision(Decision(
+                    **self._common(checked, body), status=status,
+                    message=f"Aprovo a proposta {de(agent)}: {what}." + (f" {motivo}." if motivo else "") + f" {note}")))
+            return out
 
     # -- 3. emergency (deterministic, no LLM) -------------------------------------
     def on_event(self, event: Event) -> None:

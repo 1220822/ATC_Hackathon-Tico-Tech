@@ -243,8 +243,8 @@ def main() -> None:
             import subprocess
 
             from .agents.__main__ import port_in_use
-            from .agents.specs import AGENTS
-            ports = [settings.agents_base_port + s.port_offset for s in AGENTS.values()]
+            from .agents.specs import ALL_AGENTS
+            ports = [settings.agents_base_port + s.port_offset for s in ALL_AGENTS.values()]
             if all(port_in_use(settings.agents_host, port) for port in ports):
                 log.info("já há agentes a escutar nas portas %s; uso esses", ports)
             else:  # the child exits on its own if this process dies (--parent-pid)

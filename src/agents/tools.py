@@ -63,6 +63,7 @@ async def tendencia_temperatura(
 
 
 TOOLS_BY_AGENT = {
+    "coordenador": [],  # its prompt already has the whole house; with tools qwen kept calling them
     "seguranca": [estado_casa, estado_divisao],
     "energia": [estado_casa, estado_divisao, consumo_por_hora],
     "conforto": [estado_casa, estado_divisao, tendencia_temperatura],

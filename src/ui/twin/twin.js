@@ -480,8 +480,10 @@ function applyDevice(wd, d, st) {
 function renderHeader(st) {
   $("casa").textContent = st.home_name ? `Gémeo digital · ${st.home_name}` : "Gémeo digital";
   const modo = $("modo");
-  modo.textContent = st.mode === "simulado" ? "Simulado (réplica)" : "MCP real";
+  modo.textContent = (st.mode === "simulado" ? "Simulado (réplica)" : "MCP real") + (st.dry_run ? " · dry-run" : " · atua");
   modo.className = "badge" + (st.mode === "simulado" ? " simulado" : "");
+  modo.title = st.dry_run ? "Dry-run: o Coordenador regista as decisões mas não envia nada à casa."
+    : "O Coordenador executa as decisões aprovadas na casa.";
   const seg = $("seguranca");
   seg.textContent = `Segurança: ${MODE_PT[st.security.status] || st.security.status}`;
   seg.className = "badge " + (st.security.armed ? "armada" : "desarmada");

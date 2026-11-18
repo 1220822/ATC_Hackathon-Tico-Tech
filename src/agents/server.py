@@ -1,12 +1,13 @@
 """A2A servers of the LLM agents (Microsoft Agent Framework + a2a-sdk).
 
-    python -m src.agents                    # Segurança :9101, Energia :9102, Conforto :9103
+    python -m src.agents                    # Coordenador :9100, Segurança :9101, Energia :9102, Conforto :9103
     python -m src.agents --only energia     # one agent per process, if you want them apart
 
 Each agent is an agent_framework Agent backed by the team's OpenAI-compatible LLM server
 (LLM_BASE_URL / LLM_MODEL, e.g. qwen3.8:latest), with read-only tools (src.agents.tools), and is
-exposed through the A2A protocol (JSON-RPC + agent card) by A2AExecutor. The agents never write
-to the house: they answer with proposals that the Coordinator arbitrates.
+exposed through the A2A protocol (JSON-RPC + agent card) by A2AExecutor. No agent writes to the
+house: the specialists answer with proposals, the Coordinator agent with approve/reject verdicts,
+and src.coordinator executes the approved ones after its guardrails.
 """
 
 import asyncio
@@ -23,14 +24,14 @@ from starlette.applications import Starlette
 
 from ..config import Settings
 from . import tools as agent_tools
-from .specs import AGENTS, AgentSpec, instructions_for
+from .specs import ALL_AGENTS, AgentSpec, instructions_for
 
 log = logging.getLogger(__name__)
 A2A_PROTOCOL_VERSION = "1.0"
 
 
 def agent_url(settings: Settings, key: str) -> str:
-    return f"http://{settings.agents_host}:{settings.agents_base_port + AGENTS[key].port_offset}/"
+    return f"http://{settings.agents_host}:{settings.agents_base_port + ALL_AGENTS[key].port_offset}/"
 
 
 def make_chat_client(settings: Settings):
@@ -78,7 +79,7 @@ async def serve(settings: Settings, keys: list[str], chat_client_factory=make_ch
     agent_tools.configure(settings.api_url)
     servers = []
     for key in keys:
-        spec = AGENTS[key]
+        spec = ALL_AGENTS[key]
         url = agent_url(settings, key)
         port = settings.agents_base_port + spec.port_offset
         app = build_app(spec, url, chat_client_factory(settings), chat_options(settings))

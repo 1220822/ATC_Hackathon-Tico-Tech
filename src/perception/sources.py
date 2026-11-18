@@ -52,13 +52,14 @@ class SimSource:
 
 class HybridSource:
     """SIMULATE=true: everything from SimHome (real rooms seeded from the dump + simulated rooms).
-    SIMULATE=false: real get_home from the MCP plus the simulated rooms of config/home.json,
-    whose state lives in the SimHome file (so scripts/simulate.py --room can drive them)."""
+    SIMULATE=false: real get_home from the MCP only; with SIM_ROOMS=true, plus the simulated rooms
+    of config/home.json, whose state lives in the SimHome file (scripts/simulate.py --room)."""
 
     def __init__(self, settings: Settings, client=None, config: HomeConfig | None = None):
         config = config if config is not None else load_home_config(settings.home_config_file)
         self.simulate = settings.simulate
-        self.sim = SimSource(settings, config) if settings.simulate or config.sim_room_ids else None
+        with_sim_rooms = settings.sim_rooms and bool(config.sim_room_ids)
+        self.sim = SimSource(settings, config) if settings.simulate or with_sim_rooms else None
         self.mcp = None if settings.simulate else McpSource(client)
         self.name = "sim" if self.simulate else ("mcp+sim" if self.sim else "mcp")
 

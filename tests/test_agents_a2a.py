@@ -125,18 +125,22 @@ class TestAgentsProcess(unittest.TestCase):
         import time
 
         from src.agents.__main__ import port_in_use
-        from tests.agents_support import free_port
-        base = free_port() + 10  # three ports above a free one
+        import random
+        base = random.randrange(21000, 29000, 10)  # below the ephemeral range used by other tests
+        while any(port_in_use("127.0.0.1", base + i) for i in range(4)):  # Coordenador + 3 agents
+            base += 10
         env = {**os.environ, "AGENTS_BASE_PORT": str(base), "PYTHONIOENCODING": "utf-8"}
-        parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(4)"])
+        parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(12)"])
         agents = subprocess.Popen([sys.executable, "-m", "src.agents", "--parent-pid", str(parent.pid)],
-                                  env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                  env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
             t0 = time.time()
             while not port_in_use("127.0.0.1", base + 2) and time.time() - t0 < 20:
                 time.sleep(0.2)
-            self.assertTrue(port_in_use("127.0.0.1", base + 2))  # Energia is up
-            parent.wait(10)
+            if not port_in_use("127.0.0.1", base + 2):
+                agents.kill()
+                self.fail("agentes não arrancaram: " + agents.stderr.read().decode("utf-8", "replace")[-800:])
+            parent.wait(20)
             self.assertIsNotNone(agents.wait(15))  # and goes away with its parent
         finally:
             for p in (parent, agents):

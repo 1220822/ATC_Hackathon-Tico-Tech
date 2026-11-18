@@ -8,6 +8,8 @@ to the Coordinator.
   queue up for its next call;
 - each call is a real A2A request (agent_framework.a2a.A2AAgent -> JSON-RPC) to the agent's
   server; a failed task or a reply without valid JSON is reported, never acted upon;
+- the specialists' proposals go to the Coordinator agent (also over A2A): arbitrate() is the
+  arbiter that src.coordinator.Coordinator calls (from a worker thread) to get its verdicts;
 - the status of each agent (online, busy, last latency/error) goes to SharedMemory for the UI.
 """
 
@@ -21,7 +23,7 @@ from typing import Callable
 from ..config import Settings
 from ..memory import Decision, EventBus, SharedMemory
 from ..perception.state import Event, HomeState, _num, de
-from .specs import AGENTS, AgentReply, BadReply, parse_reply
+from .specs import AGENTS, ALL_AGENTS, AgentReply, BadReply, CoordinatorReply, parse_reply
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +96,39 @@ def build_prompt(events: list[Event], state: HomeState, now: float | None = None
             "Analisa e responde só com o JSON pedido.")
 
 
+def _decision_line(d) -> str:
+    return f"- [{time.strftime('%H:%M:%S', time.localtime(d.ts))}] {d.agent} ({d.status}): {d.message}"
+
+
+def build_coordinator_prompt(agent: str, reply: AgentReply, proposals: list, events: list[Event],
+                             state: HomeState, recent: list, emergency_active: bool,
+                             priorities: dict[str, int], now: float | None = None) -> str:
+    """The A2A message for the Coordinator agent: what happened, the house, what was decided
+    recently, and the numbered proposals it must approve or reject.
+    proposals: [(Proposal, description)] in the order the verdicts refer to (n = 1, 2, ...)."""
+    now = time.time() if now is None else now
+    ev_lines = [f"- [{time.strftime('%H:%M:%S', time.localtime(e.ts))}] {e.type}"
+                f"{' (' + e.room_name + ')' if e.room_name else ''}: {e.message}" for e in events] or ["- (nenhum)"]
+    summary = state.summary()
+    house = {"seguranca": summary["seguranca"], "alarme_ativo": summary["alarme_ativo"],
+             "divisoes": {name: {k: v for k, v in r.items() if k not in ("id", "dispositivos")}
+                          for name, r in summary["divisoes"].items()}}
+    order = " > ".join(name for name, _ in sorted(priorities.items(), key=lambda kv: kv[1]))
+    props = [f"{i}. {agent}: {what} ({p.device_id} -> {p.acao}). Motivo: {p.motivo or '(sem motivo)'}"
+             for i, (p, what) in enumerate(proposals, 1)]
+    recent_lines = [_decision_line(d) for d in recent] or ["- (nenhuma)"]
+    return (f"Hora atual: {time.strftime('%H:%M', time.localtime(now))}.\n"
+            f"Prioridades (mais forte primeiro): {order}.\n"
+            f"Emergência de fumo ativa: {'sim' if emergency_active else 'não'}.\n\n"
+            "Eventos:\n" + "\n".join(ev_lines) + "\n\n"
+            f"Estado da casa:\n{json.dumps(house, ensure_ascii=False)}\n\n"
+            "Dispositivos acionáveis:\n" + "\n".join(_actionable(state) or ["- (nenhum)"]) + "\n\n"
+            "Decisões recentes (últimos 5 min):\n" + "\n".join(recent_lines) + "\n\n"
+            f"Análise do agente {agent}: {reply.resumo}\n\n"
+            "Propostas a decidir:\n" + "\n".join(props) + "\n\n"
+            "Decide todas as propostas e responde só com o JSON pedido.")
+
+
 def _failed_task(response) -> str | None:
     """Error text if the A2A task ended in TASK_STATE_FAILED (the client returns the history then)."""
     from a2a.types import TaskState
@@ -123,18 +158,23 @@ def _is_transport_error(e: BaseException) -> bool:
 
 class AgentBridge:
     def __init__(self, memory: SharedMemory, settings: Settings, coordinator, bus: EventBus | None = None,
-                 urls: dict[str, str] | None = None, client_factory: Callable | None = None):
+                 urls: dict[str, str] | None = None, client_factory: Callable | None = None,
+                 coordinator_url: str | None = None):
+        """urls: specialist key -> A2A url; coordinator_url: the Coordinator agent (default port
+        AGENTS_BASE_PORT). Once started, the bridge is the Coordinator's arbiter."""
         from .server import agent_url
         self.memory, self.s, self.coordinator = memory, settings, coordinator
         self.urls = urls or {k: agent_url(settings, k) for k in AGENTS}
+        self.coordinator_url = coordinator_url or agent_url(settings, "coordenador")
         self._client_factory = client_factory or self._a2a_client
         self._loop = asyncio.new_event_loop()
         self._queues: dict[str, asyncio.Queue] = {}
         self._sent: dict[tuple[str, str, str | None], float] = {}
         self._thread: threading.Thread | None = None
-        self.status = {k: {"key": k, "name": AGENTS[k].name, "url": u, "online": None, "busy": False,
+        self._coord_client = None
+        self.status = {k: {"key": k, "name": ALL_AGENTS[k].name, "url": u, "online": None, "busy": False,
                            "last_ts": None, "last_latency_s": None, "last_error": None}
-                       for k, u in self.urls.items()}
+                       for k, u in {"coordenador": self.coordinator_url, **self.urls}.items()}
         for k in self.status:
             self._publish(k)
         if bus is not None:
@@ -155,13 +195,17 @@ class AgentBridge:
         self._thread = threading.Thread(target=run, name="a2a-bridge", daemon=True)
         self._thread.start()
         ready.wait(5)
-        log.info("ponte A2A ativa: %s", ", ".join(f"{AGENTS[k].name} {u}" for k, u in self.urls.items()))
+        if self.coordinator is not None:
+            self.coordinator.arbiter = self.arbitrate
+        log.info("ponte A2A ativa: %s", ", ".join(f"{s['name']} {s['url']}" for s in self.status.values()))
         return self
 
     def stop(self) -> None:
         """Cancel the workers, stop the loop and wait for the thread (clean shutdown)."""
         if self._thread is None or self._loop.is_closed():
             return
+        if self.coordinator is not None and getattr(self.coordinator, "arbiter", None) == self.arbitrate:
+            self.coordinator.arbiter = None
 
         async def cancel_workers():
             tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -179,6 +223,8 @@ class AgentBridge:
 
     # -- events from the perception loop (any thread) ---------------------------
     def on_event(self, e: Event) -> None:
+        if self._loop.is_closed():  # stopped: the bus may still deliver events
+            return
         for key in route(e, self.memory.state, getattr(self.coordinator, "emergency_active", False)):
             if key not in self._queues:
                 continue
@@ -197,7 +243,8 @@ class AgentBridge:
     # -- workers (bridge loop) ----------------------------------------------------
     def _a2a_client(self, key: str):
         from agent_framework.a2a import A2AAgent
-        return A2AAgent(name=AGENTS[key].name, url=self.urls[key], timeout=self.s.agent_timeout_s)
+        url = self.coordinator_url if key == "coordenador" else self.urls[key]
+        return A2AAgent(name=ALL_AGENTS[key].name, url=url, timeout=self.s.agent_timeout_s)
 
     async def _worker(self, key: str) -> None:
         q = self._queues[key]
@@ -215,36 +262,64 @@ class AgentBridge:
             await self.ask(key, client, batch, state)
 
     async def ask(self, key: str, client, batch: list[Event], state: HomeState) -> AgentReply | None:
+        """One specialist call; its proposals then go to the Coordinator (consider -> arbiter)."""
+        try:
+            reply = await self._call(key, client, build_prompt(batch, state), AgentReply)
+        except BadReply as e:  # the agent answered, but not something we can act on
+            self.memory.add_decision(Decision(agent=AGENTS[key].name, status="erro",
+                                              message=f"Resposta inválida do agente: {str(e)[:160]}"))
+            return None
+        except Exception:  # down / timeout: already reported by _call
+            return None
+        await asyncio.to_thread(self.coordinator.consider, AGENTS[key].name, reply, batch)
+        return reply
+
+    # -- the Coordinator agent ---------------------------------------------------
+    def arbitrate(self, prompt: str) -> CoordinatorReply:
+        """Called by Coordinator.consider() from a worker thread: asks the Coordinator agent over
+        A2A and returns its verdicts. Raises BadReply / transport errors (nothing is executed then)."""
+        fut = asyncio.run_coroutine_threadsafe(self._ask_coordinator(prompt), self._loop)
+        return fut.result(self.s.agent_timeout_s * 2 + 10)
+
+    async def _ask_coordinator(self, prompt: str) -> CoordinatorReply:
+        if self._coord_client is None:
+            self._coord_client = self._client_factory("coordenador")
+        return await self._call("coordenador", self._coord_client, prompt, CoordinatorReply)
+
+    async def _call(self, key: str, client, prompt: str, model):
+        """A2A call with status for the UI. Raises BadReply (answered, unusable) or the transport
+        error (reported once as a 'Sistema' decision while the agent stays down)."""
         st = self.status[key]
         st["busy"] = True
         self._publish(key)
         t0 = time.time()
-        reply = None
         try:
-            response = await self._run_with_retry(client, build_prompt(batch, state))
+            response = await self._run_with_retry(client, prompt)
             err = _failed_task(response)
             if err:
                 raise BadReply(err)
-            reply = parse_reply(response.text)
+            try:
+                parsed = parse_reply(response.text, model)
+            except BadReply:
+                log.warning("resposta inválida de %s: %r", key, (response.text or "")[:800])
+                raise
             st.update(online=True, last_error=None)
-        except BadReply as e:  # the agent answered, but not something we can act on
+            return parsed
+        except BadReply as e:
             st.update(online=True, last_error=str(e)[:200])
-            self.memory.add_decision(Decision(agent=AGENTS[key].name, status="erro",
-                                              message=f"Resposta inválida do agente: {str(e)[:160]}"))
+            raise
         except Exception as e:  # server down, timeout, transport error
             was = st["online"]
             st.update(online=False, last_error=f"{type(e).__name__}: {e}"[:200])
             if was is not False:  # report the outage once
                 self.memory.add_decision(Decision(
                     agent="Sistema", status="erro",
-                    message=f"Agente {AGENTS[key].name} indisponível por A2A ({self.urls[key]})."))
+                    message=f"Agente {ALL_AGENTS[key].name} indisponível por A2A ({st['url']})."))
             log.warning("agente %s falhou: %s", key, e)
+            raise
         finally:
             st.update(busy=False, last_ts=time.time(), last_latency_s=round(time.time() - t0, 1))
             self._publish(key)
-        if reply is not None:
-            await asyncio.to_thread(self.coordinator.consider, AGENTS[key].name, reply, batch)
-        return reply
 
     async def _run_with_retry(self, client, prompt: str):
         """One retry on transport errors (e.g. a stale keep-alive connection): the request never

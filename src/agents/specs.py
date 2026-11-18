@@ -1,13 +1,19 @@
-"""The three LLM agents (Segurança, Energia, Conforto): who they are, what they answer, and the
-reply format shared by the A2A servers (src.agents.server) and the Coordinator's bridge.
+"""The LLM agents: three specialists (Segurança, Energia, Conforto) and the Coordinator, who they
+are, what they answer, and the reply formats shared by the A2A servers (src.agents.server) and
+the Coordinator's bridge.
 
-Agents only PROPOSE. They see the house through read-only tools and reply with JSON:
+Specialists only PROPOSE. They see the house through read-only tools and reply with JSON:
 
     {"resumo": "<one PT-PT sentence for the timeline>",
      "propostas": [{"device_id": "<id from the list>", "acao": "on" | "off", "motivo": "<short>"}]}
 
-The Coordinator decides (guard, priorities, dry-run) and is the only one that writes.
-Smoke never reaches them: the emergency path is deterministic (src.coordinator).
+The Coordinator LLM decides on each proposal:
+
+    {"resumo": "<one sentence>", "decisoes": [{"n": 1, "aprovar": true | false, "motivo": "<short>"}]}
+
+and src.coordinator applies hard guardrails (device/action allowed, smoke emergency, recent
+higher-priority actions) before it executes, being the only component that writes.
+Smoke never reaches the LLMs: the emergency path is deterministic (src.coordinator).
 """
 
 import json
@@ -32,6 +38,33 @@ Responde APENAS com um objeto JSON, sem texto antes nem depois:
 {"resumo": "<uma frase para a linha do tempo>", "propostas": [{"device_id": "<id>", "acao": "on" ou "off", "motivo": "<frase curta>"}]}
 """
 
+COORDINATOR_RULES = """
+Como decidir:
+- Prioridades: segurança das pessoas; depois pedidos do utilizador; depois Segurança, Energia e Conforto,
+  por esta ordem.
+- Aprova só se o motivo da proposta for confirmado por um facto concreto dos eventos ou do estado da
+  casa (ex.: janela aberta e aquecedor ligado). Motivos vagos ("poupar", "conforto") sem esse facto:
+  recusa. Na dúvida, recusa: as decisões aprovadas são executadas na casa real.
+- A casa é um só espaço: uma janela aberta numa divisão (ex.: Sala) arrefece as outras (ex.: Quarto).
+  Aquecer com uma janela aberta em qualquer divisão é desperdício, mesmo que o aquecedor esteja a 0 W
+  nesse instante (pode voltar a aquecer a qualquer momento).
+- Nunca inventes factos para justificar uma decisão (ex.: presença ou ausência de pessoas, horários).
+- Uma luz acesa não é desperdício: não sabes se há alguém na divisão, por isso recusa desligar luzes
+  por poupança ou conforto.
+- Não contraries uma ação recente (secção "Decisões recentes") de quem tem mais prioridade, nem
+  ligues e desligues o mesmo aparelho em pouco tempo.
+- Se duas propostas se contradizem, aprova no máximo uma.
+- Não sabes se há pessoas em casa além do que os dados dizem.
+
+Regras:
+- Escreve sempre em português de Portugal (PT-PT), frases curtas, sem emojis nem markdown.
+- Nunca aproves armar ou desarmar a segurança (essas propostas nem te chegam).
+- Decide TODAS as propostas, pelo número.
+
+Responde APENAS com um objeto JSON, sem texto antes nem depois:
+{"resumo": "<uma frase>", "decisoes": [{"n": <número da proposta>, "aprovar": true ou false, "motivo": "<frase curta>"}]}
+"""
+
 
 @dataclass(frozen=True)
 class AgentSpec:
@@ -41,6 +74,7 @@ class AgentSpec:
     description: str
     instructions: str
     priority: int  # lower wins in conflicts (Emergência 0, Utilizador 1)
+    rules: str = COMMON  # reply format and rules appended to the instructions
 
 
 AGENTS: dict[str, AgentSpec] = {
@@ -70,8 +104,18 @@ AGENTS: dict[str, AgentSpec] = {
 }
 
 
+COORDINATOR = AgentSpec(
+    key="coordenador", name="Coordenador", port_offset=0, priority=1, rules=COORDINATOR_RULES,
+    description="Decide, proposta a proposta, o que os agentes Segurança, Energia e Conforto pedem.",
+    instructions="És o Coordenador de uma casa inteligente. Os agentes especialistas (Segurança, Energia, "
+                 "Conforto) propõem ligar ou desligar luzes e tomadas; tu decides se cada proposta se executa, "
+                 "olhando para a casa toda e para o que foi decidido há pouco.",
+)
+ALL_AGENTS: dict[str, AgentSpec] = {"coordenador": COORDINATOR, **AGENTS}  # everything served over A2A
+
+
 def instructions_for(spec: AgentSpec) -> str:
-    return spec.instructions + "\n" + COMMON
+    return spec.instructions + "\n" + spec.rules
 
 
 class Proposal(BaseModel):
@@ -83,6 +127,17 @@ class Proposal(BaseModel):
 class AgentReply(BaseModel):
     resumo: str = Field(min_length=1, max_length=400)
     propostas: list[Proposal] = Field(default_factory=list, max_length=4)
+
+
+class Verdict(BaseModel):
+    n: int = Field(ge=1)
+    aprovar: bool
+    motivo: str = Field("", max_length=300)
+
+
+class CoordinatorReply(BaseModel):
+    resumo: str = Field("", max_length=400)
+    decisoes: list[Verdict] = Field(default_factory=list, max_length=12)
 
 
 class BadReply(ValueError):
@@ -109,8 +164,9 @@ def _json_candidates(text: str):
     yield from reversed(blocks)
 
 
-def parse_reply(text: str) -> AgentReply:
-    """Agent text -> AgentReply. Tolerates code fences, <think> blocks and text around the JSON."""
+def parse_reply(text: str, model: type[BaseModel] = AgentReply):
+    """Agent text -> model (AgentReply or CoordinatorReply). Tolerates code fences, <think> blocks
+    and text around the JSON."""
     for cand in _json_candidates(text or ""):
         try:
             data = json.loads(cand)
@@ -118,7 +174,7 @@ def parse_reply(text: str) -> AgentReply:
             continue
         if isinstance(data, dict):
             try:
-                return AgentReply.model_validate(data)
+                return model.model_validate(data)
             except ValidationError as e:
                 raise BadReply(f"JSON do agente inválido: {e.errors()[0]['msg']}") from None
     raise BadReply("o agente não devolveu JSON")

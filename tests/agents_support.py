@@ -8,7 +8,7 @@ import uvicorn
 from agent_framework import BaseChatClient, ChatResponse, Message
 
 from src.agents.server import build_app
-from src.agents.specs import AGENTS
+from src.agents.specs import ALL_AGENTS
 
 
 class FakeChat(BaseChatClient):
@@ -43,7 +43,7 @@ class A2AServer:
         self.port = port or free_port()
         self.url = f"http://127.0.0.1:{self.port}/"
         self.chat = chat
-        app = build_app(AGENTS[key], self.url, chat, options)
+        app = build_app(ALL_AGENTS[key], self.url, chat, options)
         self.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="error"))
         self.thread = threading.Thread(target=self.server.run, daemon=True)
 

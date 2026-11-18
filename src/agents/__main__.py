@@ -1,5 +1,5 @@
 """Run the A2A agent servers:
-    python -m src.agents                    (Segurança, Energia, Conforto)
+    python -m src.agents                    (Coordenador, Segurança, Energia, Conforto)
     python -m src.agents --only energia     (just one)
     python -m src.agents --parent-pid 1234  (exit when that process ends; used by `src.api --agents`)
 """
@@ -13,7 +13,7 @@ import sys
 
 from ..config import get_settings
 from .server import serve
-from .specs import AGENTS
+from .specs import ALL_AGENTS
 
 log = logging.getLogger("src.agents")
 
@@ -61,16 +61,16 @@ def main() -> None:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser(description="Servidores A2A dos agentes")
-    p.add_argument("--only", choices=list(AGENTS), action="append", help="só este agente (pode repetir)")
+    p.add_argument("--only", choices=list(ALL_AGENTS), action="append", help="só este agente (pode repetir)")
     p.add_argument("--parent-pid", type=int, default=None, help="terminar quando este processo terminar")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     for noisy in ("httpx", "httpx2", "a2a", "agent_framework"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     settings = get_settings()
-    keys = a.only or list(AGENTS)
-    busy = [settings.agents_base_port + AGENTS[k].port_offset for k in keys
-            if port_in_use(settings.agents_host, settings.agents_base_port + AGENTS[k].port_offset)]
+    keys = a.only or list(ALL_AGENTS)
+    busy = [settings.agents_base_port + ALL_AGENTS[k].port_offset for k in keys
+            if port_in_use(settings.agents_host, settings.agents_base_port + ALL_AGENTS[k].port_offset)]
     if busy:
         raise SystemExit(f"Porta(s) {', '.join(map(str, busy))} já em uso: provavelmente os agentes já estão "
                          f"a correr noutro terminal. Pára-os ou muda AGENTS_BASE_PORT.")
