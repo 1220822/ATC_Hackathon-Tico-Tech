@@ -58,6 +58,16 @@ class Settings(BaseModel):
     store_interval_s: float
     # 3D digital twin: where rooms and devices are drawn (versioned)
     layout_file: Path
+    # LLM (OpenAI-compatible endpoint) and the A2A agents
+    llm_base_url: str
+    llm_model: str
+    llm_api_key: str  # local servers ignore it, but the OpenAI client wants one
+    agents_enabled: bool  # the API process sends events to the agents over A2A
+    agents_host: str
+    agents_base_port: int  # Segurança = base+1, Energia = base+2, Conforto = base+3
+    agent_timeout_s: float
+    agent_cooldown_s: float  # same event type + room is not sent to the same agent again before this
+    api_url: str  # where the agents' read-only tools find the API
 
 
 @lru_cache
@@ -87,4 +97,13 @@ def get_settings() -> Settings:
         history_db=Path(os.environ.get("HISTORY_DB", str(VAR_DIR / ("history_sim.db" if simulate else "history.db")))),
         store_interval_s=_float("STORE_INTERVAL_S", 30.0),
         layout_file=Path(os.environ.get("LAYOUT_FILE", str(ROOT / "config" / "layout.json"))),
+        llm_base_url=os.environ.get("LLM_BASE_URL") or "http://localhost:1234/v1",
+        llm_model=os.environ.get("LLM_MODEL") or "qwen3.8:latest",
+        llm_api_key=os.environ.get("LLM_API_KEY") or "local",
+        agents_enabled=_bool("AGENTS", True),
+        agents_host=os.environ.get("AGENTS_HOST") or "127.0.0.1",
+        agents_base_port=int(_float("AGENTS_BASE_PORT", 9100)),
+        agent_timeout_s=_float("AGENT_TIMEOUT_S", 120.0),
+        agent_cooldown_s=_float("AGENT_COOLDOWN_S", 60.0),
+        api_url=(os.environ.get("API_URL") or "http://127.0.0.1:8000").rstrip("/"),
     )

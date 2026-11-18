@@ -17,6 +17,8 @@ Endpoints (rooms by id or name):
     GET /twin/state?n=30                                      digital twin: layout + device values + events
     GET /twin/stream                                          the same, live (Server-Sent Events)
     POST /coordinator/request {device_id, action: on|off}     user request -> Coordinator (guard, dry-run)
+    GET /tools/consumo_por_hora?divisao=&horas=               read-only tools of the LLM agents
+    GET /tools/tendencia_temperatura?divisao=&horas=&periodo_min=
 Metrics: temperature, humidity, power, contact, light. agg: avg | sum | min | max.
 """
 
@@ -35,6 +37,7 @@ from .coordinator import Coordinator, RequestRefused, UserRequest
 from .memory import SharedMemory
 from .perception.state import HomeState, RoomState, _num
 from .storage.history import History
+from .storage.tools import HistoryTools
 from .twin.layout import LayoutError
 from .twin.state import twin_state, twin_stream
 from .writes import UnknownDevice
@@ -165,6 +168,23 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
         return StreamingResponse(twin_stream(memory, settings, disconnected=request.is_disconnected),
                                  media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    tools = HistoryTools(settings.history_db, lambda: memory.state, settings.store_interval_s)
+
+    @app.get("/tools/consumo_por_hora")
+    def tool_consumo(divisao: str | None = None, horas: int = Query(24, ge=1, le=168)):
+        out = tools.call("consumo_por_hora", {"divisao": divisao, "horas": horas})
+        if "erro" in out:
+            raise HTTPException(400, out["erro"])
+        return out
+
+    @app.get("/tools/tendencia_temperatura")
+    def tool_tendencia(divisao: str, horas: float = Query(3, ge=0.25, le=72),
+                       periodo_min: int = Query(15, ge=1, le=240)):
+        out = tools.call("tendencia_temperatura", {"divisao": divisao, "horas": horas, "periodo_min": periodo_min})
+        if "erro" in out:
+            raise HTTPException(400, out["erro"])
+        return out
 
     @app.post("/coordinator/request")
     def coordinator_request(req: UserRequest):
