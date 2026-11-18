@@ -157,9 +157,10 @@ class OpenAIVisionAnalyzer:
         model_name: str,
         api_key: str = "local",
         *,
-        timeout_s: float = 25.0,
+        timeout_s: float = 45.0,
         reasoning_effort: str = "none",
         max_tokens: int = 500,
+        keep_alive: str = "30m",
         transport: httpx.BaseTransport | None = None,
     ):
         self.base_url = base_url.rstrip("/")
@@ -168,6 +169,7 @@ class OpenAIVisionAnalyzer:
         self.timeout_s = timeout_s
         self.reasoning_effort = reasoning_effort.strip()
         self.max_tokens = max_tokens
+        self.keep_alive = keep_alive.strip()
         self._lock = threading.Lock()
         self._client = httpx.Client(timeout=timeout_s, transport=transport)
 
@@ -243,6 +245,21 @@ class OpenAIVisionAnalyzer:
             content = " ".join(part.get("text", "") for part in content if isinstance(part, dict))
         return parse_vision_payload(str(content or ""))
 
+    def warmup(self) -> bool:
+        """Best-effort Ollama pre-load (POST /api/generate with keep_alive, 0 tokens generated).
+        Silently returns False on non-Ollama servers (e.g. 404) or transient network errors."""
+        if not self.keep_alive:
+            return False
+        root = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+        url = f"{root}/api/generate"
+        payload = {"model": self.model_name, "keep_alive": self.keep_alive}
+        with self._lock:
+            try:
+                resp = self._client.post(url, json=payload)
+            except httpx.HTTPError:
+                return False
+        return resp.status_code == 200
+
     def close(self) -> None:
         with self._lock:
             self._client.close()
@@ -289,6 +306,9 @@ class MockVisionAnalyzer:
             out = VisionAnalysisPayload(category="empty", overall_confidence=0.9, scene_note_pt="Divisão vazia.")
         return out if isinstance(out, VisionAnalysisPayload) else VisionAnalysisPayload.model_validate(out)
 
+    def warmup(self) -> bool:
+        return True
+
     def close(self) -> None:
         pass
 
@@ -301,5 +321,6 @@ def make_analyzer(settings: Settings) -> VisionAnalyzer:
         api_key=settings.vision_api_key,
         timeout_s=settings.vision_timeout_s,
         reasoning_effort=settings.llm_reasoning_effort,
+        keep_alive=settings.vision_keep_alive,
     )
 

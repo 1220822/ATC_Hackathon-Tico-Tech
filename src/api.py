@@ -271,6 +271,7 @@ def main() -> None:
     if settings.vision_enabled:
         from .vision.worker import VISION_TRIGGER_EVENTS, VisionWorker
         vision_worker = VisionWorker(memory, bus, settings).start()
+        vision_worker.warmup_async()
         bus.subscribe(vision_worker.on_event, types=list(VISION_TRIGGER_EVENTS))
     bridge = None
     agents_proc = None

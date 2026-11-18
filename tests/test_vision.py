@@ -79,7 +79,9 @@ class TestVisionSettings(unittest.TestCase):
         self.assertEqual(s.vision_base_url, "http://192.168.2.161:1234/v1")
         self.assertEqual(s.vision_model, "qwen3.8:latest")
         self.assertEqual(s.vision_api_key, "team-key")
-        self.assertEqual(s.vision_timeout_s, 25.0)
+        self.assertEqual(s.vision_timeout_s, 45.0)
+        self.assertEqual(s.vision_keep_alive, "30m")
+        self.assertTrue(s.vision_warmup)
         self.assertEqual(s.vision_cooldown_s, 10.0)
         self.assertEqual(s.vision_stay_cooldown_s, 30.0)
         self.assertFalse(s.vision_trigger_disarmed)
@@ -469,8 +471,47 @@ class TestVisionAnalyzer(unittest.TestCase):
         try:
             self.assertIsInstance(real, OpenAIVisionAnalyzer)
             self.assertEqual(real.model_name, s.vision_model)
+            self.assertEqual(real.keep_alive, s.vision_keep_alive)
         finally:
             real.close()
+
+    def test_ollama_warmup_and_non_ollama_fallback(self):
+        seen: list[dict] = []
+
+        def ok_handler(req: httpx.Request) -> httpx.Response:
+            seen.append({"url": str(req.url), "body": json.loads(req.content.decode("utf-8"))})
+            return httpx.Response(200, json={"done": True})
+
+        a = OpenAIVisionAnalyzer(
+            "http://192.168.2.161:1234/v1",
+            "qwen3.8:latest",
+            keep_alive="30m",
+            transport=httpx.MockTransport(ok_handler),
+        )
+        try:
+            self.assertTrue(a.warmup())
+            self.assertEqual(seen[0]["url"], "http://192.168.2.161:1234/api/generate")
+            self.assertEqual(seen[0]["body"], {"model": "qwen3.8:latest", "keep_alive": "30m"})
+        finally:
+            a.close()
+
+        # Non-Ollama server (404) or network error silently returns False without raising
+        a_404 = OpenAIVisionAnalyzer(
+            "https://api.example.com/v1",
+            "gpt-4o",
+            keep_alive="30m",
+            transport=httpx.MockTransport(lambda req: httpx.Response(404, text="not found")),
+        )
+        try:
+            self.assertFalse(a_404.warmup())
+        finally:
+            a_404.close()
+
+        a_off = OpenAIVisionAnalyzer("http://localhost:11434/v1", "qwen3.8:latest", keep_alive="")
+        try:
+            self.assertFalse(a_off.warmup())
+        finally:
+            a_off.close()
 
 
 def _sample_home_state(security_status: str = "AWAY") -> HomeState:
@@ -755,6 +796,34 @@ class TestVisionWorker(unittest.TestCase):
             self.assertEqual(len(VISION_TRIGGER_EVENTS), 6)
         finally:
             worker.stop()
+
+    def test_worker_warmup_async_respects_flag(self):
+        mem, bus = SharedMemory(), EventBus()
+        called = threading.Event()
+
+        class WarmupMock(MockVisionAnalyzer):
+            def warmup(self) -> bool:
+                called.set()
+                return True
+
+        w_on = VisionWorker(
+            mem, bus, self.s.model_copy(update={"vision_warmup": True, "vision_keep_alive": "30m"}),
+            source=FileFrameSource(self.img),
+            analyzer=WarmupMock(),
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        )
+        t = w_on.warmup_async()
+        self.assertIsNotNone(t)
+        self.assertTrue(called.wait(2.0))
+        t.join(2.0)
+
+        w_off = VisionWorker(
+            mem, bus, self.s.model_copy(update={"vision_warmup": False}),
+            source=FileFrameSource(self.img),
+            analyzer=WarmupMock(),
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        )
+        self.assertIsNone(w_off.warmup_async())
 
 
 class _FakeA2AClient:

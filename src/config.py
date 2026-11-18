@@ -77,6 +77,8 @@ class Settings(BaseModel):
     vision_model: str
     vision_api_key: str
     vision_timeout_s: float
+    vision_keep_alive: str  # Ollama keep_alive sent during startup warmup (e.g. "30m", "-1"); "" disables
+    vision_warmup: bool  # best-effort non-blocking Ollama warmup on API startup
     vision_cooldown_s: float
     vision_stay_cooldown_s: float
     vision_trigger_disarmed: bool
@@ -132,7 +134,9 @@ def get_settings() -> Settings:
         vision_base_url=(os.environ.get("VISION_BASE_URL") or "").strip() or llm_base_url,
         vision_model=(os.environ.get("VISION_MODEL") or "").strip() or llm_model,
         vision_api_key=(os.environ.get("VISION_API_KEY") or "").strip() or llm_api_key,
-        vision_timeout_s=_float("VISION_TIMEOUT_S", 25.0),
+        vision_timeout_s=_float("VISION_TIMEOUT_S", 45.0),
+        vision_keep_alive=os.environ.get("VISION_KEEP_ALIVE", "30m").strip(),
+        vision_warmup=_bool("VISION_WARMUP", True),
         vision_cooldown_s=_float("VISION_COOLDOWN_S", 10.0),
         vision_stay_cooldown_s=_float("VISION_STAY_COOLDOWN_S", 30.0),
         vision_trigger_disarmed=_bool("VISION_TRIGGER_DISARMED", False),

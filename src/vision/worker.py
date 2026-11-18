@@ -137,6 +137,33 @@ class VisionWorker:
         t = self._thread
         return bool(t is not None and t.is_alive() and not self._stop.is_set())
 
+    def warmup_async(self) -> threading.Thread | None:
+        """Best-effort background warmup to pre-load the Ollama model into VRAM with keep_alive."""
+        fn = getattr(self._analyzer, "warmup", None)
+        if not self.s.vision_warmup or not self.s.vision_keep_alive or not callable(fn):
+            return None
+
+        def _do():
+            try:
+                with self._io_lock:
+                    if self._stop.is_set():
+                        return
+                    ok = fn()
+                if ok:
+                    log.info(
+                        "warmup de visão concluído (%s, keep_alive=%s)",
+                        getattr(self._analyzer, "model_name", ""),
+                        self.s.vision_keep_alive,
+                    )
+                else:
+                    log.debug("warmup de visão ignorado (servidor não-Ollama ou indisponível)")
+            except Exception:  # noqa: BLE001
+                log.debug("warmup de visão falhou", exc_info=True)
+
+        t = threading.Thread(target=_do, name="vision-warmup", daemon=True)
+        t.start()
+        return t
+
     def stop(self, timeout_s: float = 5.0) -> None:
         self._stop.set()
         with self._cond:
