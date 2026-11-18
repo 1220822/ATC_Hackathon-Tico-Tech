@@ -70,12 +70,29 @@ class Settings(BaseModel):
     agent_timeout_s: float
     agent_cooldown_s: float  # same event type + room is not sent to the same agent again before this
     api_url: str  # where the agents' read-only tools find the API
+    # local camera vision (frame capture + VLM inference)
+    vision_enabled: bool
+    camera_rtsp_url: str
+    vision_base_url: str
+    vision_model: str
+    vision_api_key: str
+    vision_timeout_s: float
+    vision_cooldown_s: float
+    vision_stay_cooldown_s: float
+    vision_trigger_disarmed: bool
+    vision_sim_image: Path | None
+    vision_max_frames: int
+    vision_frames_dir: Path
 
 
 @lru_cache
 def get_settings() -> Settings:
     _load_env_file()
     simulate = _bool("SIMULATE", False)
+    llm_base_url = os.environ.get("LLM_BASE_URL") or "http://localhost:1234/v1"
+    llm_model = os.environ.get("LLM_MODEL") or "qwen3.8:latest"
+    llm_api_key = os.environ.get("LLM_API_KEY") or "local"
+    sim_image_raw = (os.environ.get("VISION_SIM_IMAGE") or "").strip()
     return Settings(
         simulate=simulate,
         dry_run=_bool("DRY_RUN", True),
@@ -100,9 +117,9 @@ def get_settings() -> Settings:
         history_db=Path(os.environ.get("HISTORY_DB", str(VAR_DIR / ("history_sim.db" if simulate else "history.db")))),
         store_interval_s=_float("STORE_INTERVAL_S", 30.0),
         layout_file=Path(os.environ.get("LAYOUT_FILE", str(ROOT / "config" / "layout.json"))),
-        llm_base_url=os.environ.get("LLM_BASE_URL") or "http://localhost:1234/v1",
-        llm_model=os.environ.get("LLM_MODEL") or "qwen3.8:latest",
-        llm_api_key=os.environ.get("LLM_API_KEY") or "local",
+        llm_base_url=llm_base_url,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
         llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT", "none").strip(),
         agents_enabled=_bool("AGENTS", True),
         agents_host=os.environ.get("AGENTS_HOST") or "127.0.0.1",
@@ -110,4 +127,16 @@ def get_settings() -> Settings:
         agent_timeout_s=_float("AGENT_TIMEOUT_S", 120.0),
         agent_cooldown_s=_float("AGENT_COOLDOWN_S", 60.0),
         api_url=(os.environ.get("API_URL") or "http://127.0.0.1:8000").rstrip("/"),
+        vision_enabled=_bool("VISION_ENABLED", True),
+        camera_rtsp_url=(os.environ.get("CAMERA_RTSP_URL") or "").strip(),
+        vision_base_url=(os.environ.get("VISION_BASE_URL") or "").strip() or llm_base_url,
+        vision_model=(os.environ.get("VISION_MODEL") or "").strip() or llm_model,
+        vision_api_key=(os.environ.get("VISION_API_KEY") or "").strip() or llm_api_key,
+        vision_timeout_s=_float("VISION_TIMEOUT_S", 25.0),
+        vision_cooldown_s=_float("VISION_COOLDOWN_S", 10.0),
+        vision_stay_cooldown_s=_float("VISION_STAY_COOLDOWN_S", 30.0),
+        vision_trigger_disarmed=_bool("VISION_TRIGGER_DISARMED", False),
+        vision_sim_image=Path(sim_image_raw) if sim_image_raw else None,
+        vision_max_frames=int(_float("VISION_MAX_FRAMES", 50)),
+        vision_frames_dir=Path(os.environ.get("VISION_FRAMES_DIR") or str(VAR_DIR / "frames")),
     )
