@@ -13,6 +13,7 @@ Endpoints (rooms by id or name):
     GET /historic/rooms/{id}/{metric}?start=&end=             raw readings (epoch seconds)
     GET /historic/aggregated/{agg}/rooms/{id}/{metric}?period_s=&start=&end=
     GET /home/energy                                          current power per room + MCP yesterdayConsumption
+    GET /twin                                                 3D digital twin (Three.js, served locally)
     GET /twin/state?n=30                                      digital twin: layout + device values + events
     GET /twin/stream                                          the same, live (Server-Sent Events)
 Metrics: temperature, humidity, power, contact, light. agg: avg | sum | min | max.
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import Settings, get_settings
 from .memory import SharedMemory
@@ -34,7 +36,8 @@ from .storage.history import History
 from .twin.layout import LayoutError
 from .twin.state import twin_state, twin_stream
 
-UI_FILE = Path(__file__).resolve().parent / "ui" / "index.html"
+UI_DIR = Path(__file__).resolve().parent / "ui"
+UI_FILE = UI_DIR / "index.html"
 log = logging.getLogger(__name__)
 
 
@@ -135,6 +138,13 @@ def create_app(memory: SharedMemory, settings: Settings) -> FastAPI:
             "tarifa": st.energy.tariff,
             "moeda": st.energy.tariff_currency,
         }
+
+    app.mount("/static", StaticFiles(directory=UI_DIR / "static"), name="static")  # vendored Three.js
+    app.mount("/twin/ui", StaticFiles(directory=UI_DIR / "twin"), name="twin-ui")
+
+    @app.get("/twin", response_class=HTMLResponse, include_in_schema=False)
+    def twin_page():
+        return (UI_DIR / "twin" / "index.html").read_text(encoding="utf-8")
 
     @app.get("/twin/state")
     def get_twin_state(n: int = Query(30, ge=0, le=500)):
