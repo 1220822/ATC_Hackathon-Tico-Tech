@@ -39,6 +39,7 @@ NOUN = {"light": "a luz", "plug": "a tomada"}
 PRIORITY = {"Emergência": 0, "Utilizador": 1, **{a.name: a.priority for a in AGENTS.values()}}  # lower wins
 CONFLICT_WINDOW_S = 300  # an approved action blocks opposite proposals of lower priority this long
 EMERGENCY_RGB = (255, 0, 0)
+LIGHT_CHECK_S = 2.0  # read a light back this long after setting it (and re-send what did not stick)
 
 
 class UserRequest(BaseModel):
@@ -69,6 +70,7 @@ class Coordinator:
         self._approved: deque[tuple[float, str, str, str]] = deque(maxlen=200)  # ts, device, value, source
         self.emergency_active = False
         self._light_before: dict[str, dict] = {}  # light state before an intrusion alarm
+        self._verify: list = []  # (light, rgb, brightness) to read back after the next steps
 
     # -- guard ---------------------------------------------------------------
     def guard(self, state: HomeState, device_id: str, cap: str, value: str) -> DeviceState:
@@ -264,11 +266,67 @@ class Coordinator:
                 self.end_intrusion()
 
     @staticmethod
-    def _red_light_steps(d: DeviceState) -> list[tuple[DeviceState, dict]]:
-        r, g, b = EMERGENCY_RGB  # colour first, then brightness (see docs/capabilities/probes)
-        return [(d, {"type": "power", "value": "on"}),
-                (d, {"type": "color_rgb", "redValue": r, "greenValue": g, "blueValue": b}),
-                (d, {"type": "brightness", "value": 100})]
+    def _light_steps(d: DeviceState, rgb: tuple[int, int, int] | None, brightness: float | None,
+                     power: str | None = None) -> list[tuple[DeviceState, dict]]:
+        """Steps to set a light. Brightness BEFORE colour: on the real bulb, a brightness write sent
+        right after a colour write re-applies the old colour (the cloud still has it), so the light
+        ended up at 100 % in its previous colour (2/2 trials); brightness then colour works (2/2).
+        power "on" goes first, "off" last."""
+        steps: list[tuple[DeviceState, dict]] = []
+        if power == "on":
+            steps.append((d, {"type": "power", "value": "on"}))
+        if brightness is not None:
+            steps.append((d, {"type": "brightness", "value": brightness}))
+        if rgb is not None:
+            r, g, b = rgb
+            steps.append((d, {"type": "color_rgb", "redValue": r, "greenValue": g, "blueValue": b}))
+        if power == "off":
+            steps.append((d, {"type": "power", "value": "off"}))
+        return steps
+
+    def _red_light_steps(self, d: DeviceState) -> list[tuple[DeviceState, dict]]:
+        self._verify.append((d, EMERGENCY_RGB, 100))
+        return self._light_steps(d, EMERGENCY_RGB, 100, power="on")
+
+    def _check_lights_later(self) -> None:
+        """Read the lights back a moment later and re-send what did not stick (real MCP only)."""
+        todo, self._verify = self._verify, []
+        todo = [x for x in todo if x[0].source == "mcp"]
+        if todo and not self.s.dry_run:
+            threading.Thread(target=self._check_lights, args=(todo,), name="light-check", daemon=True).start()
+
+    def _check_lights(self, todo: list, attempts: int = 2, wait_s: float | None = None) -> int:
+        """Returns how many corrective writes were sent."""
+        wait_s = LIGHT_CHECK_S if wait_s is None else wait_s
+        sent = 0
+        for _ in range(attempts):
+            time.sleep(wait_s)
+            missing = []
+            for dev, rgb, brightness in todo:
+                try:
+                    d = self._mcp.call("get_device_details", deviceId=dev.id)
+                    caps = {c["type"]: c.get("value") for c in (d.get("data", d) or {}).get("capabilities", [])}
+                except Exception as e:  # noqa: BLE001
+                    log.warning("could not read %s back: %s", dev.id, e)
+                    continue
+                ok_b = brightness is None or _num(caps.get("brightness")) == brightness
+                ok_rgb = rgb is None or hue_rgb(caps.get("color_rgb")) == tuple(rgb)
+                if not (ok_b and ok_rgb):
+                    log.warning("luz %s não ficou como pedido (cor %s, brilho %s): a reenviar",
+                                dev.id, caps.get("color_rgb"), caps.get("brightness"))
+                    missing.append((dev, rgb, brightness))
+            if not missing:
+                return sent
+            state = self.memory.state
+            for dev, rgb, brightness in missing:
+                for _, body in self._light_steps(dev, rgb, brightness):
+                    try:
+                        self.execute(state, dev, body)
+                        sent += 1
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("light re-send failed on %s: %s", dev.id, e)
+            todo = missing
+        return sent
 
     def _run_steps(self, state: HomeState, steps: list[tuple[DeviceState, dict]], source: str) -> tuple[str, str]:
         """Execute every step (keep going on failures) -> (status, note) for one Decision."""
@@ -302,6 +360,7 @@ class Coordinator:
             if d.online:
                 steps += self._red_light_steps(d)
         status, note = self._run_steps(state, steps, "Emergência")
+        self._check_lights_later()
         n_plugs = sum(1 for dev, b in steps if dev.role == "plug")
         actions = []
         if n_plugs:
@@ -340,6 +399,7 @@ class Coordinator:
         if not steps:
             return None
         status, note = self._run_steps(state, steps, "Emergência")  # top priority for 5 min
+        self._check_lights_later()
         where = em(event.room_name) if event.room_name else "em casa"
         light = steps[0][0]
         return self.memory.add_decision(Decision(
@@ -358,16 +418,14 @@ class Coordinator:
             d = state.devices.get(dev_id)
             if d is None or not d.online:
                 continue
-            if prev["hue"]:
-                r, g, b = prev["hue"]
-                steps.append((d, {"type": "color_rgb", "redValue": r, "greenValue": g, "blueValue": b}))
-            if prev["brightness"] is not None:
-                steps.append((d, {"type": "brightness", "value": prev["brightness"]}))
-            if prev["power"] == "off":
-                steps.append((d, {"type": "power", "value": "off"}))
+            steps += self._light_steps(d, prev["hue"], prev["brightness"],
+                                       power="off" if prev["power"] == "off" else None)
+            if prev["power"] != "off":  # an off light cannot be checked for colour
+                self._verify.append((d, prev["hue"], prev["brightness"]))
         if not steps:
             return None
         status, note = self._run_steps(state, steps, "Segurança")
+        self._check_lights_later()
         light = steps[0][0]
         return self.memory.add_decision(Decision(
             agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,

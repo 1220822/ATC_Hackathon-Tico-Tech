@@ -120,5 +120,50 @@ class TestMcpWrite(CoordinatorTestCase):
                                            {"deviceId": LIGHT, "body": {"type": "power", "value": "off"}})])
 
 
+
+class BulbMcp(FakeMcp):
+    """Real-bulb-like reads: reports `reported` (colour, brightness) for the light."""
+
+    def __init__(self, reported):
+        super().__init__()
+        self.reported = reported
+
+    def call(self, tool, **args):
+        self.calls.append((tool, args))
+        if tool == "get_device_details":
+            rgb, b = self.reported
+            return {"data": {"id": args["deviceId"], "capabilities": [
+                {"type": "color_rgb", "value": ",".join(map(str, rgb))}, {"type": "brightness", "value": b}]}}
+        return {"message": "device updated"}
+
+
+class TestLightSequence(CoordinatorTestCase):
+    dry_run = False
+    simulate = False
+
+    def test_brightness_before_colour(self):
+        from src.perception.state import Event
+        self.coord._check_lights_later = lambda: None
+        d = self.coord.intrusion(Event(type="security_alarm", message="x", data={"kind": "intrusion"}))
+        types = [s["type"] for s in d.action["passos"]]
+        self.assertEqual(types, ["power", "brightness", "color_rgb"])
+        writes = [a["body"]["type"] for tool, a in self.mcp.calls if tool == "update_device_capabilities"]
+        self.assertEqual(writes, ["power", "brightness", "color_rgb"])
+
+    def test_stale_colour_is_re_sent(self):
+        light = self.memory.state.devices[LIGHT]
+        bulb = BulbMcp(((0, 255, 0), 100))  # brightness took, colour did not (seen on the real bulb)
+        self.coord._mcp = bulb
+        sent = self.coord._check_lights([(light, (255, 0, 0), 100)], attempts=1, wait_s=0)
+        self.assertEqual(sent, 2)
+        bodies = [a["body"] for tool, a in bulb.calls if tool == "update_device_capabilities"]
+        self.assertEqual(bodies, [{"type": "brightness", "value": 100},
+                                  {"type": "color_rgb", "redValue": 255, "greenValue": 0, "blueValue": 0}])
+
+    def test_nothing_re_sent_when_right(self):
+        light = self.memory.state.devices[LIGHT]
+        self.coord._mcp = BulbMcp(((255, 0, 0), 100))
+        self.assertEqual(self.coord._check_lights([(light, (255, 0, 0), 100)], attempts=2, wait_s=0), 0)
+
 if __name__ == "__main__":
     unittest.main()

@@ -26,3 +26,18 @@ Scenario payload that works: see `test2_scenario_create_response.json`.
 `post_timer_device` on the online Light with `{name,timestamp,isActive,capabilities:[power=off]}`
 still returns `HTTP 404`; `get_device_timers` stays `[]`. Not caused by the Light being offline.
 Until the body format is known, persistent plans use scenarios (`post_new_scenario`) instead.
+
+## Colour + brightness race (2026-11-18, light online, colour mode)
+
+Two writes sent back to back (each answered `device updated`) can undo each other: the second one
+is applied with the cloud's previous value of the other.
+
+| Sequence | Result (read back after 1–6 s) |
+|---|---|
+| `color_rgb` 255,0,0 then `brightness` 100, from green at 40 % | 2/2: **green** at 100 % (colour lost) |
+| `brightness` 100 then `color_rgb` 255,0,0, from green at 40 % | 2/2: red at 100 % |
+| same, a third time (through the Coordinator) | red at **40 %** (brightness lost), fixed by the read-back |
+
+So the Coordinator sends brightness before colour **and** reads the light back ~2 s later,
+re-sending what did not stick (up to 2 times). Seen live: intrusion alarm left the light at 100 %
+in its old colour before this change.
