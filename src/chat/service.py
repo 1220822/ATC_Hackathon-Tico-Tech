@@ -333,6 +333,8 @@ class ChatService:
                 return [self.say(f"Segurança: {res['note']}")]
             if kind == "suggestion" and self.insights is not None:
                 return self.insights.accept_confirmed(pl, chat=self)
+            if kind == "layout_ok":
+                return [self.say("Ótimo, fica assim. Está guardado no histórico do 3D.")]
         except RequestRefused as e:
             return [self.say(f"Não consegui: {e}.")]
         except (ValidationError, ValueError) as e:
@@ -344,6 +346,8 @@ class ChatService:
         if c is not None and c["kind"] == "learn":
             self.decline_learning(c["payload"]["value"]["kind"])
             return self.say("Está bem, continuo a pedir-te aprovação e não volto a perguntar isto.")
+        if c is not None and c["kind"] == "layout_ok" and self.layout is not None:
+            return self.layout.not_ok(self)
         if c is not None and c["kind"] == "suggestion" and self.insights is not None:
             self.insights.respond(c["payload"].get("suggestion_id"), "reject", chat=None)
         return self.say("Está bem, não faço nada.")

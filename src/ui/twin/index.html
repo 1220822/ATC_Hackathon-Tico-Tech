@@ -23,12 +23,20 @@
   <span class="badge alarme" id="alarme" hidden>EM ALARME</span>
   <span id="agentes" class="agentes" title="Agentes LLM ligados por A2A"></span>
   <span class="espaco"></span>
+  <button type="button" id="editar-3d" title="Arrastar divisões e dispositivos">Ajustar 3D</button>
   <button type="button" id="ver-casa" title="Voltar à vista da casa toda">Ver casa toda</button>
   <span class="ligacao" id="ligacao"><span class="ponto"></span><span id="ligacao-texto">a ligar…</span></span>
 </header>
 <div id="avisos" hidden></div>
 <main id="principal">
-  <div id="cena" aria-label="Vista 3D da casa"></div>
+  <div id="cena" aria-label="Vista 3D da casa">
+    <div id="edicao" hidden>
+      <span><b>Modo de edição</b> · arrasta as divisões e os dispositivos</span>
+      <button type="button" id="ed-gravar">Gravar</button>
+      <button type="button" id="ed-desfazer">Desfazer última</button>
+      <button type="button" id="ed-cancelar">Cancelar</button>
+    </div>
+  </div>
   <aside id="lateral">
     <section id="painel" hidden>
       <div class="painel-topo">

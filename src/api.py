@@ -69,6 +69,11 @@ class KnowledgeEditIn(BaseModel):
     text: str = Field(min_length=1, max_length=300)
 
 
+class LayoutManualIn(BaseModel):
+    rooms: dict[str, dict] = Field(default_factory=dict)
+    devices: dict[str, dict] = Field(default_factory=dict)
+
+
 class KnowledgeEraseIn(BaseModel):
     confirm: str = ""
 
@@ -266,7 +271,9 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
     # -- chat with the Coordinator ---------------------------------------------------------
     if chat is None and coordinator.memories is not None:
         from .chat.service import ChatService
+        from .twin.edit import LayoutEditor
         chat = ChatService(memory, settings, coordinator, coordinator.memories)
+        chat.layout = LayoutEditor(memory, settings, coordinator.memories.prefs)
     app.state.chat = chat
 
     def need_chat():
@@ -318,6 +325,35 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
         if body.confirm != "APAGAR":
             raise HTTPException(400, "Escreve APAGAR para confirmar.")
         return knowledge().erase_all()
+
+    # -- 3D layout: natural language (chat), by hand (drag mode) and undo ------------------------------
+    def editor():
+        from .twin.edit import LayoutEditor
+        c = need_chat()
+        if c.layout is None:
+            c.layout = LayoutEditor(memory, settings, coordinator.memories.prefs)
+        return c, c.layout
+
+    @app.get("/layout")
+    def layout_get():
+        return editor()[1].current().model_dump()
+
+    @app.post("/layout/manual")
+    def layout_manual(body: LayoutManualIn):
+        from .twin.edit import LayoutProblem
+        c, ed = editor()
+        try:
+            row = ed.manual(body.rooms, body.devices, chat=c)
+        except (LayoutProblem, LayoutError, KeyError, TypeError, ValueError) as e:
+            raise HTTPException(400, str(e)) from None
+        return {"ok": True, "pref_id": row["id"]}
+
+    @app.post("/layout/undo")
+    def layout_undo():
+        c, ed = editor()
+        what = ed.undo()
+        c.say(f"Desfeito: {what}" if what else "Não há nenhuma alteração do 3D para desfazer.", layout_changed=True)
+        return {"ok": bool(what), "desfeito": what}
 
     @app.get("/insights")
     def insights_list():
@@ -407,6 +443,8 @@ def main() -> None:
     insights = InsightService(memory, settings, coordinator, memories, chat_llm, settings.insight_min_days,
                               settings.insight_max_per_day, settings.insight_every_s)
     insights.chat, chat.insights = chat, insights
+    from .twin.edit import LayoutEditor
+    chat.layout = LayoutEditor(memory, settings, memories.prefs)
     Scheduler(memories.prefs, coordinator, chat).start_thread()
     bus.subscribe(RuleWatcher(memories.prefs, memory, lambda text: chat.say(text, kind="rule")).on_event)
     # fixed rules, straight from the bus, never through an LLM: smoke and intrusion

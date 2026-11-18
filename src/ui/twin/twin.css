@@ -102,3 +102,11 @@ button:hover { border-color: var(--muted); }
   #lateral { width: auto; border-left: 0; border-top: 1px solid var(--line); }
   #linha-lista { max-height: 40vh; }
 }
+
+/* layout edit mode (drag rooms and devices) */
+#edicao { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex;
+          gap: 8px; align-items: center; padding: 8px 12px; background: rgba(23, 28, 37, .94);
+          border: 1px solid var(--warn); border-radius: 10px; font-size: 13px; }
+#edicao[hidden] { display: none; }
+#cena.editar canvas { cursor: grab; }
+#cena.editar.arrastar canvas { cursor: grabbing; }

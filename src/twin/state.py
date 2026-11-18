@@ -108,7 +108,8 @@ def twin_state(memory: SharedMemory, settings: Settings, n: int = 30, now: float
     if state is None:
         return None
     now = time.time() if now is None else now
-    layout = load_layout(settings.layout_file)
+    from .edit import active_layout_file
+    layout = load_layout(active_layout_file(settings))
     placed = resolve_layout(layout, state)
     alarm = active_alarm(state, settings, now)
     devices = []

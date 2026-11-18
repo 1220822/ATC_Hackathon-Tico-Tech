@@ -22,7 +22,7 @@ const AREA_VAR = {
 };
 // events that only repeat a value already visible on a label: timeline yes, 3D balloon no
 const QUIET = new Set(["temperature_changed", "humidity_changed", "plug_power_changed", "device_online"]);
-const HISTORY = { temperature: ["temperature", "°C"], plug: ["power", "W"], contact: ["contact", ""], light: ["light", ""] };
+const HISTORY = { temperature: ["temperature", "°C"], plug: ["power_w", "W"], contact: ["open", ""], light: ["on", ""] };
 
 const $ = (id) => document.getElementById(id);
 function el(tag, cls, ...children) {
@@ -582,7 +582,7 @@ async function renderChart(d) {
   line.setAttribute("stroke-width", "2");
   line.setAttribute("vector-effect", "non-scaling-stroke");
   svg.append(line);
-  const fmt = (y) => (unit ? `${metric === "power" ? nf0.format(y) : nf1.format(y)} ${unit}` : y >= 0.5 ? "1" : "0");
+  const fmt = (y) => (unit ? `${metric === "power_w" ? nf0.format(y) : nf1.format(y)} ${unit}` : y >= 0.5 ? "1" : "0");
   wrap.append(svg, el("div", "eixo", el("span", null, `${hhmm(x0)} · mín ${fmt(y0)}`), el("span", null, `máx ${fmt(y1)} · ${hhmm(x1)}`)));
   box.replaceChildren(wrap);
 }
@@ -641,6 +641,7 @@ const pointer = new THREE.Vector2();
 let downAt = null;
 renderer.domElement.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; });
 renderer.domElement.addEventListener("pointerup", (e) => {
+  if (editMode) return;
   if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5 || !world) return;
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
@@ -657,6 +658,120 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   ray.setFromCamera(pointer, camera);
   renderer.domElement.style.cursor = ray.intersectObjects(world.hits, false).length ? "pointer" : "";
 });
+
+// ------------------------------------------------------------------ layout edit mode (drag by hand)
+// Opened by the "Ajustar 3D" button or by the chat ("Ajustar à mão"). Rooms snap to 0,25 m and carry
+// their devices; devices snap to 5 cm. "Gravar" sends the changes to /layout/manual (validated there
+// and stored as a layout preference, with history), "Desfazer última" restores the previous version.
+let editMode = false;
+let drag = null;
+const movedRooms = {};
+const movedDevices = new Set();
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const snap = (v, s) => Math.round(v / s) * s;
+
+function setEditMode(on) {
+  editMode = on;
+  $("edicao").hidden = !on;
+  host.classList.toggle("editar", on);
+  $("editar-3d").textContent = on ? "Sair da edição" : "Ajustar 3D";
+  drag = null;
+  controls.enabled = true;
+  for (const k of Object.keys(movedRooms)) delete movedRooms[k];
+  movedDevices.clear();
+  if (on) viewHouse();
+}
+function resetWorld() {
+  if (!current) return;
+  disposeWorld();
+  world = null;
+  applyState(current);
+}
+function rayAt(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+  ray.setFromCamera(pointer, camera);
+}
+function planePoint(plane) {
+  const p = new THREE.Vector3();
+  return ray.ray.intersectPlane(plane, p) ? p : null;
+}
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (!editMode || !world) return;
+  rayAt(e);
+  const hitDev = ray.intersectObjects(world.hits, false)[0];
+  if (hitDev) {
+    const id = hitDev.object.userData.deviceId;
+    const g = world.devices[id].group;
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -g.position.y);
+    drag = { kind: "device", id, plane, start: planePoint(plane), orig: g.position.clone() };
+  } else {
+    const fl = ray.intersectObjects(world.floors, false)[0];
+    if (!fl) return;
+    const id = fl.object.userData.roomId;
+    drag = { kind: "room", id, plane: groundPlane, start: planePoint(groundPlane), orig: world.rooms[id].group.position.clone(),
+             devs: Object.values(world.devices).filter((d) => d.data.room === id).map((d) => [d, d.group.position.clone()]) };
+  }
+  if (!drag.start) { drag = null; return; }
+  controls.enabled = false;  // capture phase: OrbitControls sees it disabled
+  host.classList.add("arrastar");
+}, true);
+window.addEventListener("pointermove", (e) => {
+  if (!drag || !world) return;
+  rayAt(e);
+  const p = planePoint(drag.plane);
+  if (!p) return;
+  const dx = p.x - drag.start.x, dz = p.z - drag.start.z;
+  if (drag.kind === "room") {
+    const sx = snap(dx, 0.25), sz = snap(dz, 0.25);
+    const wr = world.rooms[drag.id];
+    wr.group.position.set(drag.orig.x + sx, 0, drag.orig.z + sz);
+    for (const [d, o] of drag.devs) d.group.position.set(o.x + sx, o.y, o.z + sz);
+    movedRooms[drag.id] = { dx: wr.group.position.x, dz: wr.group.position.z };
+  } else {
+    const g = world.devices[drag.id].group;
+    g.position.set(snap(drag.orig.x + dx, 0.05), drag.orig.y, snap(drag.orig.z + dz, 0.05));
+    movedDevices.add(drag.id);
+  }
+});
+window.addEventListener("pointerup", () => {
+  if (!drag) return;
+  drag = null;
+  controls.enabled = true;
+  host.classList.remove("arrastar");
+});
+async function saveEdit() {
+  const rooms = {}, devices = {};
+  for (const [id, m] of Object.entries(movedRooms)) {
+    const r = world.rooms[id].data;
+    rooms[id] = { x: r.x + m.dx, z: r.z + m.dz };
+  }
+  for (const id of movedDevices) {
+    const p = world.devices[id].group.position;
+    devices[id] = { position: [p.x, p.y, p.z] };
+  }
+  if (!Object.keys(rooms).length && !Object.keys(devices).length) { setEditMode(false); return; }
+  const res = await fetch("/layout/manual", { method: "POST", headers: { "Content-Type": "application/json" },
+                                             body: JSON.stringify({ rooms, devices }) });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))).detail || res.statusText;
+    alert("Não gravei: " + detail);
+    return;
+  }
+  setEditMode(false);
+  poll();
+}
+$("ed-gravar").addEventListener("click", saveEdit);
+$("ed-cancelar").addEventListener("click", () => { setEditMode(false); resetWorld(); });
+$("ed-desfazer").addEventListener("click", async () => {
+  await fetch("/layout/undo", { method: "POST" });
+  setEditMode(false);
+  resetWorld();
+  poll();
+});
+$("editar-3d").addEventListener("click", () => { if (editMode) resetWorld(); setEditMode(!editMode); });
+window.addEventListener("tt:layout-edit", () => setEditMode(true));
+window.addEventListener("tt:layout-changed", () => setTimeout(poll, 300));
 
 // ------------------------------------------------------------------ timeline + balloons
 const seen = new Set();
