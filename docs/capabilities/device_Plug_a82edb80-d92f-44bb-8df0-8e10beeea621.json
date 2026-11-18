@@ -7,15 +7,22 @@
     "capabilities": [
       {
         "name": "",
+        "type": "instantCurrent",
+        "value": 0,
+        "min": 0,
+        "max": 30000
+      },
+      {
+        "name": "",
         "type": "instantPower",
-        "value": 7,
+        "value": 0,
         "min": 0,
         "max": 50000
       },
       {
         "name": "",
         "type": "instantVoltage",
-        "value": 229,
+        "value": 230,
         "min": 0,
         "max": 50000
       },
@@ -51,13 +58,6 @@
       },
       {
         "name": "",
-        "type": "instantCurrent",
-        "value": 57,
-        "min": 0,
-        "max": 30000
-      },
-      {
-        "name": "",
         "type": "todayConsumption",
         "value": 0,
         "min": 0,
@@ -66,7 +66,7 @@
       {
         "name": "",
         "type": "yesterdayConsumption",
-        "value": 0,
+        "value": 0.004,
         "min": 0,
         "max": 50000
       }
@@ -74,8 +74,8 @@
     "categories": [
       "energy"
     ],
-    "roomName": "Hack 7",
-    "lastCommunicationTime": 1794933400290,
+    "roomName": "Quarto",
+    "lastCommunicationTime": 1794997383434,
     "pairedTime": 1794929273370
   }
 }

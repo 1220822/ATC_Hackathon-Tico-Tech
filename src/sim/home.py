@@ -3,10 +3,14 @@
 State lives in a JSON file (var/sim_home.json by default) so that scripts/simulate.py in one
 terminal can inject events into the app running in another. It is seeded from the real dump
 in docs/capabilities/get_home.json, so the simulated path exercises the real normaliser.
+
+Devices live in home.rooms[].devices (MCP format since 2026-11-18). A state file still in the
+old flat format (home.devices) is reset automatically on load.
 """
 
 import copy
 import json
+import logging
 import os
 import time
 import uuid
@@ -17,16 +21,28 @@ from ..config import ROOT
 
 SEED_FILE = ROOT / "docs" / "capabilities" / "get_home.json"
 
+log = logging.getLogger(__name__)
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def all_devices(home: dict) -> list[dict]:
+    """Every device of every room (plus any old-format top-level devices)."""
+    return [d for r in home.get("rooms") or [] for d in r.get("devices") or []] +         list(home.get("devices") or [])
+
+
+def _is_old_format(data: dict) -> bool:
+    home = data.get("home") or {}
+    return "rooms" not in home or "devices" in home
 
 
 def _seed() -> dict:
     raw = json.loads(SEED_FILE.read_text(encoding="utf-8"))
     home = copy.deepcopy(raw.get("data", raw))
     home["security"].update({"status": "DISARMED", "isAlarmed": False, "alarmType": ""})
-    for d in home["devices"]:
+    for d in all_devices(home):
         d["lastCommunicationTime"] = _now_ms()  # everything online in simulation (incl. Light)
         for c in d["capabilities"]:
             t = c["type"]
@@ -44,6 +60,8 @@ def _seed() -> dict:
                 c["value"] = 0
             elif d["type"] == "bulb" and t == "power":
                 c["value"] = "on"
+            elif d["type"] == "bulb" and t == "brightness":
+                c["value"] = 100  # the 18/11 dump has brightness 1
             elif d["type"] == "bulb" and t == "color_rgb":
                 c.update(value="255,255,255", redValue=255, greenValue=255, blueValue=255)
             elif d["type"] == "camera" and t in ("motionDetected", "soundDetected"):
@@ -61,6 +79,14 @@ class SimHome:
     def load(self) -> dict:
         if not self.path.exists():
             self.reset()
+        data = self._read()
+        if _is_old_format(data):
+            log.warning("%s is in the old flat format (no rooms); resetting from the seed", self.path)
+            self.reset()
+            data = self._read()
+        return data
+
+    def _read(self) -> dict:
         for _ in range(5):  # the other process may be mid-replace on Windows
             try:
                 return json.loads(self.path.read_text(encoding="utf-8"))
@@ -95,7 +121,10 @@ class SimHome:
     # -- helpers -----------------------------------------------------------
     @staticmethod
     def _device(data: dict, dtype: str) -> dict:
-        return next(d for d in data["home"]["devices"] if d["type"] == dtype)
+        dev = next((d for d in all_devices(data["home"]) if d["type"] == dtype), None)
+        if dev is None:
+            raise KeyError(f"no simulated device of type {dtype}")
+        return dev
 
     @staticmethod
     def _set(dev: dict, cap: str, value, **extra) -> None:
@@ -117,7 +146,8 @@ class SimHome:
         alarm_id = uuid.uuid4().hex if event_type == "ALARM" else ""
         dev = {"id": "", "name": "", "roomId": "", "roomName": "", "type": ""}
         if device:
-            dev.update(id=device["id"], name=device["name"], type=device["type"])
+            dev.update(id=device["id"], name=device["name"], type=device["type"],
+                       roomName=device.get("roomName", ""))
         data["alarm_history"].insert(0, {
             "alarmEventDetail": {"device": dev, "timestamp": ts if event_type == "ALARM" else 0,
                                  "type": detail_type},
@@ -195,7 +225,7 @@ class SimHome:
     def apply_capability(self, device_id: str, body: dict) -> dict:
         """Behaves like update_device_capabilities on the simulated home."""
         with self.edit() as d:
-            dev = next((x for x in d["home"]["devices"] if x["id"] == device_id), None)
+            dev = next((x for x in all_devices(d["home"]) if x["id"] == device_id), None)
             if dev is None:
                 raise KeyError(f"device {device_id} not found")
             t = body["type"]

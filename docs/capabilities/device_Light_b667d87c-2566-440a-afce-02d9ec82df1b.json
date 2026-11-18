@@ -7,36 +7,12 @@
     "capabilities": [
       {
         "name": "",
-        "type": "brightness",
-        "value": 100,
-        "min": 1,
-        "max": 100
-      },
-      {
-        "name": "",
-        "type": "temperature",
-        "value": 100,
-        "min": 0,
-        "max": 100
-      },
-      {
-        "name": "",
-        "type": "color_rgb",
-        "value": "255,0,0",
-        "min": 0,
-        "max": 255,
-        "redValue": 255,
-        "greenValue": 0,
-        "blueValue": 0
-      },
-      {
-        "name": "",
         "type": "power",
         "availableValues": [
           "on",
           "off"
         ],
-        "value": "off"
+        "value": "on"
       },
       {
         "name": "",
@@ -47,11 +23,35 @@
           "white",
           "scene"
         ],
-        "value": "white"
+        "value": "colour"
+      },
+      {
+        "name": "",
+        "type": "brightness",
+        "value": 1,
+        "min": 1,
+        "max": 100
+      },
+      {
+        "name": "",
+        "type": "temperature",
+        "value": 0,
+        "min": 0,
+        "max": 100
+      },
+      {
+        "name": "",
+        "type": "color_rgb",
+        "value": "3,0,2",
+        "min": 0,
+        "max": 255,
+        "redValue": 3,
+        "greenValue": 0,
+        "blueValue": 2
       }
     ],
-    "roomName": "Hack 7",
-    "lastCommunicationTime": 1793806275648,
+    "roomName": "Quarto",
+    "lastCommunicationTime": 1794997365907,
     "pairedTime": 1793805645489
   }
 }
