@@ -16,9 +16,10 @@ class FakeChat(BaseChatClient):
 
     def __init__(self, reply: str = '{"resumo": "Nada a fazer.", "propostas": []}', error: str | None = None):
         super().__init__()
-        self.reply, self.error, self.prompts = reply, error, []
+        self.reply, self.error, self.prompts, self.options = reply, error, [], []
 
     def _inner_get_response(self, *, messages, stream, options, **kwargs):
+        self.options.append(dict(options or {}))
         system = str((options or {}).get("instructions") or "")  # the real client sends it as the system message
         self.prompts.append(system + "\n" + "\n".join(m.text or "" for m in messages))
 
@@ -38,11 +39,11 @@ def free_port() -> int:
 class A2AServer:
     """Serves one agent over real A2A (HTTP JSON-RPC) in a background thread."""
 
-    def __init__(self, key: str, chat: FakeChat, port: int | None = None):
+    def __init__(self, key: str, chat: FakeChat, port: int | None = None, options: dict | None = None):
         self.port = port or free_port()
         self.url = f"http://127.0.0.1:{self.port}/"
         self.chat = chat
-        app = build_app(AGENTS[key], self.url, chat)
+        app = build_app(AGENTS[key], self.url, chat, options)
         self.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="error"))
         self.thread = threading.Thread(target=self.server.run, daemon=True)
 

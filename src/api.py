@@ -241,7 +241,15 @@ def main() -> None:
         AgentBridge(memory, settings, coordinator, bus).start()
         if a.agents:
             import subprocess
-            agents_proc = subprocess.Popen([sys.executable, "-m", "src.agents"], env=dict(os.environ))
+
+            from .agents.__main__ import port_in_use
+            from .agents.specs import AGENTS
+            ports = [settings.agents_base_port + s.port_offset for s in AGENTS.values()]
+            if all(port_in_use(settings.agents_host, port) for port in ports):
+                log.info("já há agentes a escutar nas portas %s; uso esses", ports)
+            else:  # the child exits on its own if this process dies (--parent-pid)
+                agents_proc = subprocess.Popen([sys.executable, "-m", "src.agents", "--parent-pid", str(os.getpid())],
+                                               env=dict(os.environ))
     perception = Perception(make_source(settings), bus, memory, settings)
     try:
         perception.step()

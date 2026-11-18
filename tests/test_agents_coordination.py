@@ -232,6 +232,27 @@ class TestBridgeOverA2A(HouseTestCase):
         self.assertIn("Agente Energia indisponível", self.decisions("Sistema")[0].message)
         self.assertFalse({a["key"]: a for a in self.memory.agent_status()}["energia"]["online"])
 
+    def test_transport_error_is_retried_once(self):
+        import asyncio
+
+        from agent_framework import AgentResponse, Message
+
+        class Flaky:
+            calls = 0
+
+            async def run(self, prompt):
+                Flaky.calls += 1
+                if Flaky.calls == 1:
+                    raise RuntimeError("Network communication error: ")
+                return AgentResponse(messages=[Message("assistant", ['{"resumo": "Tudo bem."}'])])
+
+        br = AgentBridge(self.memory, self.s, self.coord, urls={"energia": "http://x/"})
+        reply = asyncio.run(br.ask("energia", Flaky(), [dropping()], self.memory.state))
+        self.assertEqual(reply.resumo, "Tudo bem.")
+        self.assertEqual(Flaky.calls, 2)
+        self.assertTrue({a["key"]: a for a in self.memory.agent_status()}["energia"]["online"])
+        self.assertEqual(self.decisions("Sistema"), [])
+
     def test_cooldown(self):
         chat = FakeChat()
         with A2AServer("energia", chat) as srv:

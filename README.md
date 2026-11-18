@@ -28,3 +28,25 @@ python scripts/simulate.py temp 18 --room cozinha
 - Three.js r160 está copiado em `src/ui/static/vendor/three/` (funciona sem internet).
 - Ensaio: `python -m src.api --sim` num terminal, `python scripts/simulate.py cenario janela` noutro.
   Para a reação ficar bem abaixo de 3 s, `POLL_INTERVAL_S=1`.
+
+### Agentes LLM por A2A (Segurança, Energia, Conforto)
+
+- Cada agente é um agente do **Microsoft Agent Framework** com o modelo do servidor da equipa
+  (`LLM_BASE_URL`, `LLM_MODEL=qwen3.8:latest` no `.env`), servido pelo protocolo **A2A**
+  (agent card + JSON-RPC) nas portas 9101–9103.
+- O Coordenador (no processo da API) envia-lhes os eventos relevantes por A2A, recebe propostas em
+  JSON, arbitra (Emergência > Utilizador > Segurança > Energia > Conforto) e só ele escreve, via
+  `execute()`, em **dry-run** por omissão. As ferramentas dos agentes são só de leitura.
+- O fumo segue um caminho de emergência determinístico, sem LLM.
+
+```powershell
+python -m src.api --sim --agents          # tudo num comando (os agentes correm num processo à parte)
+# ou em dois terminais:
+python -m src.agents                      # servidores A2A dos agentes
+python -m src.api --sim                   # perceção + Coordenador + 3D em http://127.0.0.1:8000/twin
+```
+
+- `LLM_REASONING_EFFORT=none` (omissão) desliga o raciocínio do modelo: ~1 s por resposta com o
+  qwen3.8 em vez de 8–10 s, com as mesmas propostas. `AGENTS=false` desliga os agentes.
+- No 3D, o cabeçalho mostra cada agente (à espera, a pensar…, tempo da última resposta, indisponível)
+  e as propostas e decisões aparecem na linha do tempo e em balões sobre o dispositivo.

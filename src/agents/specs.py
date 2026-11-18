@@ -26,6 +26,7 @@ Regras:
 - Os sensores podem estar em divisões diferentes (ex.: janela na Sala, aquecedor no Quarto); diz sempre
   a divisão de cada coisa.
 - Se não houver nada a fazer, devolve "propostas": [].
+- O "resumo" descreve a situação numa frase; não repitas nele as propostas (vão no campo "propostas").
 
 Responde APENAS com um objeto JSON, sem texto antes nem depois:
 {"resumo": "<uma frase para a linha do tempo>", "propostas": [{"device_id": "<id>", "acao": "on" ou "off", "motivo": "<frase curta>"}]}
@@ -55,7 +56,8 @@ AGENTS: dict[str, AgentSpec] = {
         description="Evita desperdício: aquecedor ligado com janela aberta, consumos altos, tomadas esquecidas.",
         instructions="És o agente de Energia de uma casa inteligente. O teu objetivo é evitar desperdício: "
                      "aquecimento ligado com uma janela aberta, consumos altos sem necessidade. Podes usar o "
-                     "consumo por hora. Propõe desligar o que estiver a desperdiçar energia.",
+                     "consumo por hora. Propõe desligar o que estiver a desperdiçar energia. Não proponhas desligar uma "
+                     "luz só por estar acesa: não sabes se há alguém na divisão.",
     ),
     "conforto": AgentSpec(
         key="conforto", name="Conforto", port_offset=3, priority=4,

@@ -110,6 +110,17 @@ def _failed_task(response) -> str | None:
     return None
 
 
+def _is_transport_error(e: BaseException) -> bool:
+    import httpx
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, (httpx.TransportError, ConnectionError)) or "Network communication error" in str(e):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
 class AgentBridge:
     def __init__(self, memory: SharedMemory, settings: Settings, coordinator, bus: EventBus | None = None,
                  urls: dict[str, str] | None = None, client_factory: Callable | None = None):
@@ -210,7 +221,7 @@ class AgentBridge:
         t0 = time.time()
         reply = None
         try:
-            response = await asyncio.wait_for(client.run(build_prompt(batch, state)), self.s.agent_timeout_s)
+            response = await self._run_with_retry(client, build_prompt(batch, state))
             err = _failed_task(response)
             if err:
                 raise BadReply(err)
@@ -234,6 +245,20 @@ class AgentBridge:
         if reply is not None:
             await asyncio.to_thread(self.coordinator.consider, AGENTS[key].name, reply, batch)
         return reply
+
+    async def _run_with_retry(self, client, prompt: str):
+        """One retry on transport errors (e.g. a stale keep-alive connection): the request never
+        reached the agent, so sending it again does not duplicate work. Timeouts are not retried."""
+        for attempt in (1, 2):
+            try:
+                return await asyncio.wait_for(client.run(prompt), self.s.agent_timeout_s)
+            except asyncio.TimeoutError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                if attempt == 2 or not _is_transport_error(e):
+                    raise
+                log.info("A2A: erro de transporte (%s), a repetir uma vez", e)
+                await asyncio.sleep(0.3)
 
     def _publish(self, key: str) -> None:
         self.memory.set_agent_status(key, self.status[key])

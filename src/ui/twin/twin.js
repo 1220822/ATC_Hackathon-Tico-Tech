@@ -487,9 +487,24 @@ function renderHeader(st) {
   seg.className = "badge " + (st.security.armed ? "armada" : "desarmada");
   $("alarme").hidden = !st.alarm.any;
   $("alarme").textContent = st.alarm.smoke ? "FUMO · EM ALARME" : "EM ALARME";
+  renderAgents(st.agents || []);
   const av = $("avisos");
   av.hidden = !st.warnings.length;
   av.replaceChildren(...st.warnings.map((w) => el("div", null, w)));
+}
+
+// LLM agents (A2A) as the Coordinator sees them: waiting, online, thinking, unavailable
+function renderAgents(agents) {
+  const box = $("agentes");
+  box.replaceChildren(...agents.map((a) => {
+    const cls = a.busy ? "ocupado" : a.online === true ? "online" : a.online === false ? "offline" : "";
+    const label = a.busy ? "a pensar…" : a.online === true ? (a.last_latency_s != null ? `${nf1.format(a.last_latency_s)} s` : "pronto")
+      : a.online === false ? "indisponível" : "à espera";
+    const chip = el("span", `agente ${cls}`, el("span", "ponto"), a.name, el("small", null, label));
+    chip.style.setProperty("--area", areaColor(a.name));
+    chip.title = a.last_error ? `${a.name} (A2A ${a.url}): ${a.last_error}` : `${a.name} · A2A ${a.url}`;
+    return chip;
+  }));
 }
 
 // ------------------------------------------------------------------ device panel
@@ -674,7 +689,6 @@ function anchorFor(it) {
 function showBalloon(it) {
   if (!world) return;
   const pos = anchorFor(it);
-  pos.y += 0.42 * balloons.filter((b) => b.pos.distanceTo(pos) < 0.8).length;  // stack instead of overlapping
   const decision = it.kind === "decision";
   const inner = el("div", null, el("b", null, `${decision ? it.agent : it.area}: `), it.message);
   const outer = el("div", "balao", inner);
@@ -688,6 +702,20 @@ function showBalloon(it) {
   setTimeout(() => { inner.style.opacity = "0"; }, BALLOON_MS - 800);
   setTimeout(() => removeBalloon(b), BALLOON_MS);
 }
+// Balloons on the same spot (e.g. an agent's proposal and the Coordinator's decision, which arrive
+// together) stack upwards on screen, newest on top. Done every frame because a balloon only has a
+// height once the CSS2DRenderer has put it in the page.
+function layoutBalloons() {
+  for (let i = 0; i < balloons.length; i++) {
+    let below = 0;
+    for (let j = 0; j < i; j++) {
+      if (balloons[j].pos.distanceTo(balloons[i].pos) < 0.8) below += balloons[j].inner.offsetHeight + 6;
+    }
+    const t = `translateY(${-below}px)`;
+    if (balloons[i].inner.style.transform !== t) balloons[i].inner.style.transform = t;
+  }
+}
+
 function removeBalloon(b) {
   const i = balloons.indexOf(b);
   if (i < 0) return;
@@ -785,6 +813,7 @@ function animate() {
   }
   renderer.render(scene, camera);
   labels.render(scene, camera);
+  layoutBalloons();
 }
 
 resize();

@@ -71,6 +71,17 @@ class TestA2AServer(unittest.TestCase):
         self.assertIn("agente de Energia", chat.prompts[0])  # instructions reached the model
 
 
+    def test_reasoning_effort_reaches_the_model(self):
+        from src.agents.server import chat_options
+        s = get_settings().model_copy(update={"llm_reasoning_effort": "none"})
+        chat = FakeChat()
+        with A2AServer("conforto", chat, options=chat_options(s)) as srv:
+            asyncio.run(A2AAgent(name="Conforto", url=srv.url, timeout=20).run("x"))
+        self.assertEqual(chat.options[0]["reasoning_effort"], "none")
+        self.assertEqual(chat.options[0]["temperature"], 0.2)
+        self.assertNotIn("reasoning_effort", chat_options(s.model_copy(update={"llm_reasoning_effort": ""})))
+
+
 class TestToolEndpoints(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -104,3 +115,30 @@ class TestToolEndpoints(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAgentsProcess(unittest.TestCase):
+    def test_exits_when_parent_dies(self):
+        import os
+        import subprocess
+        import sys
+        import time
+
+        from src.agents.__main__ import port_in_use
+        from tests.agents_support import free_port
+        base = free_port() + 10  # three ports above a free one
+        env = {**os.environ, "AGENTS_BASE_PORT": str(base), "PYTHONIOENCODING": "utf-8"}
+        parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(4)"])
+        agents = subprocess.Popen([sys.executable, "-m", "src.agents", "--parent-pid", str(parent.pid)],
+                                  env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            t0 = time.time()
+            while not port_in_use("127.0.0.1", base + 2) and time.time() - t0 < 20:
+                time.sleep(0.2)
+            self.assertTrue(port_in_use("127.0.0.1", base + 2))  # Energia is up
+            parent.wait(10)
+            self.assertIsNotNone(agents.wait(15))  # and goes away with its parent
+        finally:
+            for p in (parent, agents):
+                if p.poll() is None:
+                    p.kill()

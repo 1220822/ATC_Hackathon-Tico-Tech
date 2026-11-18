@@ -39,10 +39,18 @@ def make_chat_client(settings: Settings):
                                       api_key=settings.llm_api_key)
 
 
-def build_agent(spec: AgentSpec, chat_client) -> Agent:
+def chat_options(settings: Settings | None) -> dict:
+    """Options sent with every chat call. reasoning_effort="none" turns off the model's thinking:
+    with qwen3.8 on the team server, about 1 s instead of 8-10 s per answer, same proposals."""
+    opts = {"temperature": 0.2, "max_tokens": 900}
+    if settings is not None and settings.llm_reasoning_effort:
+        opts["reasoning_effort"] = settings.llm_reasoning_effort
+    return opts
+
+
+def build_agent(spec: AgentSpec, chat_client, options: dict | None = None) -> Agent:
     return Agent(chat_client, instructions_for(spec), name=spec.name, description=spec.description,
-                 tools=agent_tools.TOOLS_BY_AGENT[spec.key],
-                 default_options={"temperature": 0.2, "max_tokens": 900})
+                 tools=agent_tools.TOOLS_BY_AGENT[spec.key], default_options=options or chat_options(None))
 
 
 def agent_card(spec: AgentSpec, url: str) -> AgentCard:
@@ -57,10 +65,10 @@ def agent_card(spec: AgentSpec, url: str) -> AgentCard:
     )
 
 
-def build_app(spec: AgentSpec, url: str, chat_client) -> Starlette:
+def build_app(spec: AgentSpec, url: str, chat_client, options: dict | None = None) -> Starlette:
     """Starlette app serving one agent over A2A (agent card + JSON-RPC)."""
     card = agent_card(spec, url)
-    handler = DefaultRequestHandler(agent_executor=A2AExecutor(build_agent(spec, chat_client)),
+    handler = DefaultRequestHandler(agent_executor=A2AExecutor(build_agent(spec, chat_client, options)),
                                     task_store=InMemoryTaskStore(), agent_card=card)
     return Starlette(routes=[*create_agent_card_routes(card), *create_jsonrpc_routes(handler, "/")])
 
@@ -73,9 +81,11 @@ async def serve(settings: Settings, keys: list[str], chat_client_factory=make_ch
         spec = AGENTS[key]
         url = agent_url(settings, key)
         port = settings.agents_base_port + spec.port_offset
-        app = build_app(spec, url, chat_client_factory(settings))
+        app = build_app(spec, url, chat_client_factory(settings), chat_options(settings))
+        # keep-alive longer than the client's (httpx: 5 s), so the client always drops an idle
+        # connection first; with both at 5 s a request can land on a connection being closed
         servers.append(uvicorn.Server(uvicorn.Config(app, host=settings.agents_host, port=port,
-                                                     log_level="warning")))
-        log.info("agente %s em %s (A2A, modelo %s em %s)", spec.name, url, settings.llm_model,
-                 settings.llm_base_url)
+                                                     log_level="warning", timeout_keep_alive=75)))
+        log.info("agente %s em %s (A2A, modelo %s em %s, reasoning_effort=%s)", spec.name, url,
+                 settings.llm_model, settings.llm_base_url, settings.llm_reasoning_effort or "(omisso)")
     await asyncio.gather(*(s.serve() for s in servers))
