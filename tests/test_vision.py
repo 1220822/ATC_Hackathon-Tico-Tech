@@ -1,5 +1,9 @@
 import os
+import struct
+import tempfile
+import time
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,7 +11,28 @@ from pydantic import ValidationError
 
 from src.config import VAR_DIR, get_settings
 from src.memory import SharedMemory
+from src.vision.capture import (
+    CaptureError,
+    FileFrameSource,
+    FrameStore,
+    RtspFrameSource,
+    WebcamFrameSource,
+    make_frame_source,
+    redact_url,
+    resolve_frame_path,
+)
 from src.vision.models import VisionObservation, format_vision_message, to_event, vision_severity
+
+
+def make_solid_png(w: int = 4, h: int = 4, rgb: tuple[int, int, int] = (200, 30, 30)) -> bytes:
+    """Generate a minimal valid RGB PNG in memory (avoids committing binary blobs)."""
+    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack("!IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
 
 class TestVisionSettings(unittest.TestCase):
@@ -176,6 +201,103 @@ class TestSharedMemoryVision(unittest.TestCase):
         self.assertEqual(mem.latest_vision("sala"), obs_sala)
         self.assertEqual(mem.latest_vision("QUARTO"), obs_quarto)
         self.assertIsNone(mem.latest_vision("Cozinha"))
+
+
+class TestFrameCapture(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_file_frame_source_reads_bytes_and_handles_missing(self):
+        img = self.root / "sample.png"
+        expected = make_solid_png(8, 8, (10, 20, 30))
+        img.write_bytes(expected)
+        src = FileFrameSource(img)
+        self.assertEqual(src.capture(), expected)
+
+        with self.assertRaises(CaptureError):
+            FileFrameSource(self.root / "nao_existe.jpg").capture()
+
+        with self.assertRaises(CaptureError):
+            FileFrameSource(None).capture()
+
+    def test_file_frame_source_fallback_dir(self):
+        img = self.root / "01_scene.png"
+        expected = make_solid_png()
+        img.write_bytes(expected)
+        src = FileFrameSource(None, fallback_dir=self.root)
+        self.assertEqual(src.capture(), expected)
+
+    def test_frame_store_saves_and_prunes_retention(self):
+        frames_dir = self.root / "frames"
+        store = FrameStore(frames_dir, max_frames=3)
+        png = make_solid_png()
+        saved = []
+        base_ts = 1795000000.0
+        for i in range(5):
+            name = store.save(png, room_name="Sala", obs_id=f"obs{i}", ts=base_ts + i)
+            p = frames_dir / name
+            # ensure deterministic mtime ordering on fast filesystems
+            os.utime(p, (base_ts + i, base_ts + i))
+            saved.append(name)
+        # trigger final prune check with one more save -> max_frames=3
+        last = store.save(png, room_name="Sala", obs_id="obs5", ts=base_ts + 5)
+        remaining = sorted(p.name for p in frames_dir.iterdir() if p.is_file())
+        self.assertEqual(len(remaining), 3)
+        self.assertIn(last, remaining)
+        self.assertNotIn(saved[0], remaining)
+
+    def test_resolve_frame_path_blocks_traversal(self):
+        frames_dir = self.root / "frames"
+        frames_dir.mkdir()
+        secret = self.root / "secret.txt"
+        secret.write_text("top-secret", encoding="utf-8")
+        good = frames_dir / "snap.jpg"
+        good.write_bytes(b"\xff\xd8\xff\xd9")
+        sub = frames_dir / "nested"
+        sub.mkdir()
+        (sub / "inside.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+        self.assertEqual(resolve_frame_path(frames_dir, "snap.jpg"), good.resolve())
+        self.assertIsNone(resolve_frame_path(frames_dir, ""))
+        self.assertIsNone(resolve_frame_path(frames_dir, "../secret.txt"))
+        self.assertIsNone(resolve_frame_path(frames_dir, "..\\secret.txt"))
+        self.assertIsNone(resolve_frame_path(frames_dir, "nested/inside.jpg"))
+        self.assertIsNone(resolve_frame_path(frames_dir, "nested"))
+        self.assertIsNone(resolve_frame_path(frames_dir, str(secret)))
+        self.assertIsNone(resolve_frame_path(frames_dir, "missing.jpg"))
+
+    def test_make_frame_source_selection(self):
+        base = get_settings()
+        sim_s = base.model_copy(update={"simulate": True, "camera_rtsp_url": "rtsp://u:p@1.2.3.4/stream"})
+        self.assertIsInstance(make_frame_source(sim_s), FileFrameSource)
+
+        empty_s = base.model_copy(update={"simulate": False, "camera_rtsp_url": ""})
+        self.assertIsInstance(make_frame_source(empty_s), FileFrameSource)
+
+        cam_s = base.model_copy(update={"simulate": False, "camera_rtsp_url": "webcam:1"})
+        cam = make_frame_source(cam_s)
+        self.assertIsInstance(cam, WebcamFrameSource)
+        self.assertEqual(cam.index, 1)
+
+        rtsp_s = base.model_copy(update={"simulate": False, "camera_rtsp_url": "rtsp://admin:pass@10.0.0.5:554/s1"})
+        rtsp = make_frame_source(rtsp_s)
+        self.assertIsInstance(rtsp, RtspFrameSource)
+
+    def test_redact_url_and_lazy_cv2_error(self):
+        self.assertEqual(
+            redact_url("rtsp://admin:supersecret@192.168.1.20:554/stream1"),
+            "rtsp://<redacted>@192.168.1.20:554/stream1",
+        )
+        with patch.dict("sys.modules", {"cv2": None}):
+            with self.assertRaises(CaptureError) as ctx:
+                RtspFrameSource("rtsp://admin:supersecret@192.168.1.20:554/s1").capture()
+            self.assertNotIn("supersecret", str(ctx.exception))
+            with self.assertRaises(CaptureError):
+                WebcamFrameSource(0).capture()
 
 
 if __name__ == "__main__":
