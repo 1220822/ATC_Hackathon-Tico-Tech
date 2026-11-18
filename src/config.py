@@ -49,6 +49,10 @@ class Settings(BaseModel):
     # Hypothesis (2026-11-17): the smoke test shows up as type EMERGENCY with an empty device.
     smoke_alarm_types: frozenset[str]
     sim_state_file: Path
+    # comfort target; config/home.json can override it per room
+    setpoint_c: float
+    # rooms, per-room parameters and simulated rooms (versioned, no secrets)
+    home_config_file: Path
 
 
 @lru_cache
@@ -72,4 +76,6 @@ def get_settings() -> Settings:
             if t.strip()
         ),
         sim_state_file=Path(os.environ.get("SIM_STATE_FILE", str(VAR_DIR / "sim_home.json"))),
+        setpoint_c=_float("SETPOINT_C", 21.0),
+        home_config_file=Path(os.environ.get("HOME_CONFIG_FILE", str(ROOT / "config" / "home.json"))),
     )

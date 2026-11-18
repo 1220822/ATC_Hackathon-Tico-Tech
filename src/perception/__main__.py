@@ -12,7 +12,7 @@ import time
 from ..config import get_settings
 from ..memory import EventBus, SharedMemory
 from .poller import Perception
-from .sources import McpSource, SimSource
+from .sources import make_source
 
 ICON = {"info": " ", "warning": "!", "critical": "X"}
 
@@ -24,7 +24,7 @@ def main() -> None:
     if "--sim" in sys.argv:
         os.environ["SIMULATE"] = "true"
     settings = get_settings()
-    source = SimSource(settings) if settings.simulate else McpSource()
+    source = make_source(settings)
     bus, memory = EventBus(), SharedMemory()
     bus.subscribe(lambda e: print(
         f"{time.strftime('%H:%M:%S', time.localtime(e.ts))} [{ICON[e.severity]}] {e.type:22} {e.message}",

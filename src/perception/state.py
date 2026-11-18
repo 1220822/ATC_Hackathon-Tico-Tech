@@ -31,6 +31,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from ..config import Settings
+from ..home_config import HomeConfig, load_home_config, room_settings
 
 ROLE_BY_TYPE = {
     "bulb": "light",
@@ -64,6 +65,7 @@ class DeviceState(BaseModel):
     last_seen: float | None = None  # epoch seconds
     room_id: str = ""
     room_name: str = ""
+    source: Literal["mcp", "sim"] = "mcp"  # where writes for this device must go
     caps: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -71,6 +73,8 @@ class RoomState(BaseModel):
     id: str
     name: str
     type: str = ""  # livingRoom | bedroom | ...
+    simulated: bool = False  # defined in config/home.json, exists only in the simulator
+    setpoint_c: float | None = None  # config/home.json for this room, else SETPOINT_C
     device_ids: list[str] = Field(default_factory=list)
 
 
@@ -188,6 +192,8 @@ class HomeState(BaseModel):
         if r is None:
             return {}
         out: dict[str, Any] = {"id": r.id, "tipo": r.type}
+        if r.simulated:
+            out["simulado"] = True
         devs = self.room_devices(r.id)
         roles = {d.role for d in devs}
         if "contact" in roles:
@@ -195,6 +201,7 @@ class HomeState(BaseModel):
         if "temperature" in roles:
             out["temperatura_c"] = _num(self.cap("temperature", "temperatureValue", room=r.id))
             out["humidade_pct"] = _num(self.cap("temperature", "humidityValue", room=r.id))
+            out["setpoint_c"] = r.setpoint_c
         if "plug" in roles:
             out["aquecedor_ligado"] = self.cap("plug", "power", room=r.id) == "on"
             out["aquecedor_potencia_w"] = _num(self.cap("plug", "instantPower", room=r.id))
@@ -319,11 +326,20 @@ def normalize(raw: dict, settings: Settings, now: float | None = None) -> HomeSt
     now = time.time() if now is None else now
     home = raw.get("home") or {}
     security = home.get("security") or {}
+    config = load_home_config(settings.home_config_file)
+    default_source = "sim" if raw.get("source") == "sim" else "mcp"
+    sim_rooms = set(raw.get("sim_rooms") or [])
     devices: dict[str, DeviceState] = {}
     rooms: dict[str, RoomState] = {}
+
+    def new_room(room_id: str, name: str, type_: str = "") -> RoomState:
+        sp = config.params_for(room_id, name).setpoint_c
+        return RoomState(id=room_id, name=name, type=type_, simulated=room_id in sim_rooms,
+                         setpoint_c=settings.setpoint_c if sp is None else sp)
+
     for r in home.get("rooms") or []:
         if r.get("id"):
-            rooms[r["id"]] = RoomState(id=r["id"], name=r.get("name", ""), type=r.get("type", ""))
+            rooms[r["id"]] = new_room(r["id"], r.get("name", ""), r.get("type", ""))
 
     for room, d in _iter_devices(home):
         if room is not None and room.get("id"):
@@ -331,7 +347,8 @@ def normalize(raw: dict, settings: Settings, now: float | None = None) -> HomeSt
         else:  # old flat format: only roomName (and maybe roomId) on the device
             room_name = d.get("roomName") or home.get("name", "")
             room_id = d.get("roomId") or f"room-{_slug(room_name) or 'casa'}"
-            rooms.setdefault(room_id, RoomState(id=room_id, name=room_name))
+            if room_id not in rooms:
+                rooms[room_id] = new_room(room_id, room_name)
         last = d.get("lastCommunicationTime")
         last_s = last / 1000 if isinstance(last, (int, float)) and last > 0 else None
         caps = {c.get("type"): c.get("value") for c in d.get("capabilities") or [] if c.get("type")}
@@ -344,6 +361,7 @@ def normalize(raw: dict, settings: Settings, now: float | None = None) -> HomeSt
             last_seen=last_s,
             room_id=room_id,
             room_name=room_name,
+            source="sim" if room_id in sim_rooms else default_source,
             caps=caps,
         )
         rooms[room_id].device_ids.append(d["id"])
@@ -408,6 +426,7 @@ def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Ev
     if prev is None:
         return []
     ev: list[Event] = []
+    config = load_home_config(settings.home_config_file)
 
     def add(type_, message, severity="info", dev=None, room_name=None, **data):
         ev.append(Event(type=type_, message=message, severity=severity,
@@ -451,6 +470,7 @@ def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Ev
         if old is None:
             continue
         de_room, em_room = _sp(de(dev.room_name)), _sp(em(dev.room_name))
+        rs = room_settings(settings, dev.room_id, dev.room_name, config)  # per-room thresholds
         if old.online != dev.online:
             add("device_online" if dev.online else "device_offline",
                 f"{dev.name}{de_room} {'voltou a comunicar' if dev.online else 'deixou de comunicar'}.",
@@ -477,11 +497,11 @@ def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Ev
 
         if dev.role == "temperature":
             t0, t1 = _num(old.caps.get("temperatureValue")), _num(dev.caps.get("temperatureValue"))
-            if t0 is not None and t1 is not None and abs(t1 - t0) >= settings.temp_change_c:
+            if t0 is not None and t1 is not None and abs(t1 - t0) >= rs.temp_change_c:
                 add("temperature_changed", f"Temperatura{em_room}: {fmt(t0)} °C → {fmt(t1)} °C.", dev=dev,
                     before=t0, after=t1, delta=round(t1 - t0, 2))
             h0, h1 = _num(old.caps.get("humidityValue")), _num(dev.caps.get("humidityValue"))
-            if h0 is not None and h1 is not None and abs(h1 - h0) >= settings.humidity_change_pct:
+            if h0 is not None and h1 is not None and abs(h1 - h0) >= rs.humidity_change_pct:
                 add("humidity_changed", f"Humidade{em_room}: {h0:.0f}% → {h1:.0f}%.", dev=dev,
                     before=h0, after=h1)
 
@@ -498,7 +518,7 @@ def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Ev
                 add("plug_switched", f"Aquecedor (tomada){de_room} {'ligado' if on else 'desligado'}.",
                     dev=dev, on=on)
             p0, p1 = _num(old.caps.get("instantPower")), _num(dev.caps.get("instantPower"))
-            if p0 is not None and p1 is not None and abs(p1 - p0) >= settings.plug_power_change_w:
+            if p0 is not None and p1 is not None and abs(p1 - p0) >= rs.plug_power_change_w:
                 add("plug_power_changed", f"Consumo da tomada{de_room}: {p0:.0f} W → {p1:.0f} W.",
                     dev=dev, before=p0, after=p1)
 
@@ -535,26 +555,29 @@ class TemperatureTrend:
         self.s = settings
         self.tracks: dict[str, _Track] = {}
 
-    def update(self, state: HomeState) -> list[Event]:
+    def update(self, state: HomeState, config: HomeConfig | None = None) -> list[Event]:
         out: list[Event] = []
+        config = config if config is not None else load_home_config(self.s.home_config_file)
         for dev in state.devices_by_role("temperature"):
             t = _num(dev.caps.get("temperatureValue"))
             if t is None:
                 continue
+            rs = room_settings(self.s, dev.room_id, dev.room_name, config)
             tr = self.tracks.setdefault(dev.id, _Track())
             tr.samples.append((state.ts, t))
-            while tr.samples and state.ts - tr.samples[0][0] > self.s.temp_drop_window_s:
+            while tr.samples and state.ts - tr.samples[0][0] > rs.temp_drop_window_s:
                 tr.samples.popleft()
             peak = max(v for _, v in tr.samples)
             drop = peak - t
-            if not tr.active and drop >= self.s.temp_drop_c:
+            if not tr.active and drop >= rs.temp_drop_c:
                 tr.active = True
-                out.append(self._event(state, dev, peak, t, drop))
-            elif tr.active and drop < self.s.temp_drop_c / 2:
+                out.append(self._event(state, dev, peak, t, drop, rs))
+            elif tr.active and drop < rs.temp_drop_c / 2:
                 tr.active = False
         return out
 
-    def _event(self, state: HomeState, dev: DeviceState, peak: float, t: float, drop: float) -> Event:
+    def _event(self, state: HomeState, dev: DeviceState, peak: float, t: float, drop: float,
+               rs: Settings) -> Event:
         open_rooms = _room_names(state.open_contacts())
         heater_rooms = _room_names(state.plugs_on())
         context = []
@@ -566,7 +589,7 @@ class TemperatureTrend:
             type="temperature_dropping", severity="warning", ts=state.ts,
             device_id=dev.id, role="temperature", room=dev.room_id, room_name=dev.room_name,
             message=f"A temperatura{_sp(em(dev.room_name))} está a descer: {fmt(peak)} °C → {fmt(t)} °C "
-                    f"em {int(self.s.temp_drop_window_s // 60)} min"
+                    f"em {int(rs.temp_drop_window_s // 60)} min"
                     + (f" ({'; '.join(context)})." if context else "."),
             data={"from": peak, "to": t, "drop": round(drop, 2),
                   "window_open": state.any_contact_open, "heater_on": state.any_plug_on,

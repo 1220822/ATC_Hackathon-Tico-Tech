@@ -23,7 +23,8 @@ class SimTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.s = get_settings().model_copy(update={
-            "sim_state_file": Path(self.tmp.name) / "sim.json", "tick_interval_s": 1e9})
+            "sim_state_file": Path(self.tmp.name) / "sim.json", "tick_interval_s": 1e9,
+            "home_config_file": Path(self.tmp.name) / "no-config.json"})  # no simulated rooms
         self.home = SimHome(self.s.sim_state_file)
         self.home.reset()
 

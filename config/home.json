@@ -1,0 +1,18 @@
+{
+  "notes": "Configuração da casa (versionada, sem segredos). 'rooms': parâmetros por divisão (chave = nome ou id), sobrepõem-se ao .env. 'simulated_rooms': divisões que só existem no simulador; ids gerados: sim-<nome>-<papel>.",
+  "rooms": {
+    "Quarto": {"setpoint_c": 21.0}
+  },
+  "simulated_rooms": [
+    {
+      "name": "Cozinha",
+      "type": "kitchen",
+      "devices": ["temperature", "contact", "plug"],
+      "setpoint_c": 19.0,
+      "temp_drop_c": 0.8,
+      "plug_power_change_w": 100,
+      "initial_temperature_c": 19.5,
+      "initial_humidity_pct": 65
+    }
+  ]
+}
