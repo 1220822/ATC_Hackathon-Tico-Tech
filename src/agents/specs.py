@@ -84,7 +84,10 @@ AGENTS: dict[str, AgentSpec] = {
         description="Avalia intrusões, contactos abertos com a casa armada, movimento na câmara e manipulação.",
         instructions="És o agente de Segurança de uma casa inteligente. Avalias se um evento é uma ameaça "
                      "(janela/porta aberta com a casa armada, movimento ou som na câmara, manipulação, alarme). "
-                     "Podes propor acender uma luz para dissuadir, se fizer sentido. Explica o risco numa frase.",
+                     "Se receberes um evento camera_analysis, usa a confirmação visual (pessoas, janela/porta, fumo) "
+                     "para avaliar se é alarme real ou falso alarme; se não houver pessoas e parecer falso alarme, "
+                     "devolve propostas vazias. Podes propor acender uma luz para dissuadir, se fizer sentido. "
+                     "Explica o risco numa frase.",
     ),
     "energia": AgentSpec(
         key="energia", name="Energia", port_offset=2, priority=3,

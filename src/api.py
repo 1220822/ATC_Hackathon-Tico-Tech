@@ -28,10 +28,12 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .config import Settings, get_settings
 from .coordinator import Coordinator, RequestRefused, UserRequest
@@ -41,7 +43,13 @@ from .storage.history import History
 from .storage.tools import HistoryTools
 from .twin.layout import LayoutError
 from .twin.state import twin_state, twin_stream
+from .vision.capture import resolve_frame_path
 from .writes import UnknownDevice
+
+
+class VisionAnalyzeRequest(BaseModel):
+    divisao: str | None = None
+    contexto: Literal["intrusion", "smoke", "general"] = "general"
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 UI_FILE = UI_DIR / "index.html"
@@ -64,7 +72,8 @@ def room_view(st: HomeState, r: RoomState) -> dict:
     }
 
 
-def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinator | None = None) -> FastAPI:
+def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinator | None = None,
+               vision_worker=None) -> FastAPI:
     app = FastAPI(title="Tico&Tech: casa por divisões", version="1.0")
     coordinator = coordinator or Coordinator(memory, settings)
     History(settings.history_db)  # make sure the file and schema exist
@@ -187,6 +196,29 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
             raise HTTPException(400, out["erro"])
         return out
 
+    @app.get("/tools/ultima_analise_camara")
+    def tool_ultima_analise_camara(divisao: str | None = None):
+        obs = memory.latest_vision(divisao)
+        if obs is None:
+            return {"disponivel": False, "mensagem": "Ainda não existe análise visual."}
+        return {"disponivel": True, **obs.model_dump()}
+
+    @app.get("/vision/frames/{filename}")
+    def vision_frame(filename: str):
+        path = resolve_frame_path(settings.vision_frames_dir, filename)
+        if path is None:
+            raise HTTPException(404, "Frame não encontrado.")
+        media = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        return FileResponse(path, media_type=media)
+
+    @app.post("/vision/analyze")
+    def vision_analyze(req: VisionAnalyzeRequest | None = None):
+        """Manual on-demand visual analysis (runs in FastAPI threadpool)."""
+        if vision_worker is None:
+            raise HTTPException(503, "Módulo de visão indisponível.")
+        body = req or VisionAnalyzeRequest()
+        return vision_worker.analyze_now(room=body.divisao, context=body.contexto).model_dump()
+
     @app.get("/agents/status")
     def agents_status():
         return memory.agent_status()
@@ -235,10 +267,16 @@ def main() -> None:
     coordinator = Coordinator(memory, settings)
     # fixed rules, straight from the bus, never through an LLM: smoke and intrusion
     bus.subscribe(coordinator.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
+    vision_worker = None
+    if settings.vision_enabled:
+        from .vision.worker import VISION_TRIGGER_EVENTS, VisionWorker
+        vision_worker = VisionWorker(memory, bus, settings).start()
+        bus.subscribe(vision_worker.on_event, types=list(VISION_TRIGGER_EVENTS))
+    bridge = None
     agents_proc = None
     if settings.agents_enabled:
         from .agents.bridge import AgentBridge
-        AgentBridge(memory, settings, coordinator, bus).start()
+        bridge = AgentBridge(memory, settings, coordinator, bus, vision_worker=vision_worker).start()
         if a.agents:
             import subprocess
 
@@ -261,12 +299,17 @@ def main() -> None:
     recorder.start_thread()
     print(f"UI: http://{a.host}:{a.port}/   ·   3D: http://{a.host}:{a.port}/twin   ·   "
           f"agentes: {'A2A ' + settings.llm_model if settings.agents_enabled else 'desligados'}"
+          f"   ·   visão: {'ativa' if vision_worker is not None else 'desligada'}"
           f"   ·   {'DRY-RUN' if settings.dry_run else 'ESCRITAS REAIS'}", flush=True)
     try:
         # open SSE streams would otherwise keep Ctrl+C waiting
-        uvicorn.run(create_app(memory, settings, coordinator), host=a.host, port=a.port, log_level="warning",
-                    timeout_graceful_shutdown=2)
+        uvicorn.run(create_app(memory, settings, coordinator, vision_worker=vision_worker),
+                    host=a.host, port=a.port, log_level="warning", timeout_graceful_shutdown=2)
     finally:
+        if vision_worker is not None:
+            vision_worker.stop()
+        if bridge is not None:
+            bridge.stop()
         if agents_proc is not None:
             agents_proc.terminate()
 

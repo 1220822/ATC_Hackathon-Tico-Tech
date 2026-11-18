@@ -29,9 +29,10 @@ log = logging.getLogger(__name__)
 
 BATCH_S = 1.5  # wait this long after the first event to collect related ones
 MAX_BATCH = 8
-SECURITY_EVENTS = {"security_alarm", "tamper_alarm", "camera_motion", "camera_sound", "hub_alarm",
-                   "alarm_state_changed", "security_mode_changed"}
+SECURITY_EVENTS = {"security_alarm", "tamper_alarm", "camera_motion", "camera_sound", "camera_analysis",
+                   "hub_alarm", "alarm_state_changed", "security_mode_changed"}
 ALARM_EVENTS = {"security_alarm", "hub_alarm", "alarm_state_changed"}
+VISION_DEFERRED_EVENTS = frozenset({"camera_motion", "camera_sound"})
 
 
 def route(e: Event, state: HomeState | None, emergency_active: bool = False) -> list[str]:
@@ -78,11 +79,30 @@ def _actionable(state: HomeState) -> list[str]:
     return lines
 
 
+def _event_line(e: Event) -> str:
+    base = (f"- [{time.strftime('%H:%M:%S', time.localtime(e.ts))}] {e.type}"
+            f"{' (' + e.room_name + ')' if e.room_name else ''}: {e.message}")
+    if e.type != "camera_analysis" or not isinstance(e.data, dict):
+        return base
+    d = e.data
+    status = d.get("status", "ok")
+    if status != "ok":
+        return f"{base} [status={status}]"
+    win = d.get("window_or_door_open")
+    win_str = "sim" if win is True else ("não" if win is False else "n/d")
+    smoke_str = "sim" if d.get("smoke_or_fire_visible") else "não"
+    conf = d.get("overall_confidence")
+    conf_str = f"{float(conf):.2f}" if isinstance(conf, (int, float)) else "n/d"
+    note = str(d.get("scene_note_pt") or "").strip()
+    note_part = f', nota="{note}"' if note else ""
+    return (f"{base} [pessoas={d.get('person_count', 0)}, categoria={d.get('category', 'unclear')}, "
+            f"janela_aberta={win_str}, fumo={smoke_str}, confiança={conf_str}{note_part}]")
+
+
 def build_prompt(events: list[Event], state: HomeState, now: float | None = None) -> str:
     """The A2A message for an agent: the events, the house in short, and what may be proposed."""
     now = time.time() if now is None else now
-    ev_lines = [f"- [{time.strftime('%H:%M:%S', time.localtime(e.ts))}] {e.type}"
-                f"{' (' + e.room_name + ')' if e.room_name else ''}: {e.message}" for e in events]
+    ev_lines = [_event_line(e) for e in events]
     summary = state.summary()
     house = {"seguranca": summary["seguranca"], "alarme_ativo": summary["alarme_ativo"],
              "divisoes": {name: {k: v for k, v in r.items() if k not in ("id", "dispositivos")}
@@ -107,8 +127,7 @@ def build_coordinator_prompt(agent: str, reply: AgentReply, proposals: list, eve
     recently, and the numbered proposals it must approve or reject.
     proposals: [(Proposal, description)] in the order the verdicts refer to (n = 1, 2, ...)."""
     now = time.time() if now is None else now
-    ev_lines = [f"- [{time.strftime('%H:%M:%S', time.localtime(e.ts))}] {e.type}"
-                f"{' (' + e.room_name + ')' if e.room_name else ''}: {e.message}" for e in events] or ["- (nenhum)"]
+    ev_lines = [_event_line(e) for e in events] or ["- (nenhum)"]
     summary = state.summary()
     house = {"seguranca": summary["seguranca"], "alarme_ativo": summary["alarme_ativo"],
              "divisoes": {name: {k: v for k, v in r.items() if k not in ("id", "dispositivos")}
@@ -159,7 +178,8 @@ def _is_transport_error(e: BaseException) -> bool:
 class AgentBridge:
     def __init__(self, memory: SharedMemory, settings: Settings, coordinator, bus: EventBus | None = None,
                  urls: dict[str, str] | None = None, client_factory: Callable | None = None,
-                 coordinator_url: str | None = None):
+                 coordinator_url: str | None = None, vision_worker=None,
+                 vision_watchdog_s: float | None = None):
         """urls: specialist key -> A2A url; coordinator_url: the Coordinator agent (default port
         AGENTS_BASE_PORT). Once started, the bridge is the Coordinator's arbiter."""
         from .server import agent_url
@@ -167,8 +187,11 @@ class AgentBridge:
         self.urls = urls or {k: agent_url(settings, k) for k in AGENTS}
         self.coordinator_url = coordinator_url or agent_url(settings, "coordenador")
         self._client_factory = client_factory or self._a2a_client
+        self._vision_worker = vision_worker
+        self._watchdog_s = (settings.vision_timeout_s + 5.0) if vision_watchdog_s is None else vision_watchdog_s
         self._loop = asyncio.new_event_loop()
         self._queues: dict[str, asyncio.Queue] = {}
+        self._watchdogs: dict[str, asyncio.TimerHandle] = {}  # room_key -> TimerHandle (loop thread only)
         self._sent: dict[tuple[str, str, str | None], float] = {}
         self._thread: threading.Thread | None = None
         self._coord_client = None
@@ -208,6 +231,9 @@ class AgentBridge:
             self.coordinator.arbiter = None
 
         async def cancel_workers():
+            for h in self._watchdogs.values():
+                h.cancel()
+            self._watchdogs.clear()
             tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
             for t in tasks:
                 t.cancel()
@@ -221,9 +247,44 @@ class AgentBridge:
         self._thread.join(5)
         self._loop.close()
 
+    # -- vision watchdog (loop thread only) -------------------------------------
+    def _schedule_watchdog(self, room_key: str, e: Event) -> None:
+        old = self._watchdogs.pop(room_key, None)
+        if old is not None:
+            old.cancel()
+        self._watchdogs[room_key] = self._loop.call_later(
+            self._watchdog_s, self._watchdog_fire, room_key, e
+        )
+
+    def _cancel_watchdog(self, room_key: str) -> None:
+        old = self._watchdogs.pop(room_key, None)
+        if old is not None:
+            old.cancel()
+
+    def _watchdog_fire(self, room_key: str, e: Event) -> None:
+        self._watchdogs.pop(room_key, None)
+        log.warning("watchdog de visão expirou em %s para %s; a reencaminhar evento original", room_key, e.type)
+        if "seguranca" not in self._queues:
+            return
+        fallback = e.model_copy(update={"message": f"{e.message} (análise visual indisponível)"})
+        if self._recently_sent("seguranca", fallback):
+            return
+        self._queues["seguranca"].put_nowait(fallback)
+
     # -- events from the perception loop (any thread) ---------------------------
     def on_event(self, e: Event) -> None:
         if self._loop.is_closed():  # stopped: the bus may still deliver events
+            return
+        room_key = e.room or "__home__"
+        if e.type == "camera_analysis":
+            self._loop.call_soon_threadsafe(self._cancel_watchdog, room_key)
+        elif (
+            e.type in VISION_DEFERRED_EVENTS
+            and self._vision_worker is not None
+            and self._vision_worker.is_alive()
+            and self._vision_worker.will_handle(e, self.memory.state)
+        ):
+            self._loop.call_soon_threadsafe(self._schedule_watchdog, room_key, e)
             return
         for key in route(e, self.memory.state, getattr(self.coordinator, "emergency_active", False)):
             if key not in self._queues:

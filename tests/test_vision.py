@@ -7,14 +7,22 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from src.agents import bridge as bridge_mod
+from src.agents.bridge import AgentBridge, build_prompt
+from src.agents.tools import TOOLS_BY_AGENT, ultima_analise_camara
+from src.api import create_app
 from src.config import VAR_DIR, get_settings
+from src.coordinator import Coordinator
 from src.memory import EventBus, SharedMemory
 from src.perception.state import DeviceState, Event, HomeState, RoomState
+from src.twin.state import AREA_BY_EVENT, event_view, twin_state
 from src.vision.analyzer import (
     MockVisionAnalyzer,
     OpenAIVisionAnalyzer,
@@ -747,6 +755,280 @@ class TestVisionWorker(unittest.TestCase):
             self.assertEqual(len(VISION_TRIGGER_EVENTS), 6)
         finally:
             worker.stop()
+
+
+class _FakeA2AClient:
+    """In-process stand-in for A2AAgent so AgentBridge tests run offline without sockets."""
+
+    def __init__(self, reply_text: str):
+        self.reply_text = reply_text
+        self.prompts: list[str] = []
+
+    async def run(self, prompt: str):
+        self.prompts.append(prompt)
+        msg = SimpleNamespace(role="assistant", text=self.reply_text)
+        return SimpleNamespace(text=self.reply_text, messages=[msg], raw_representation=[])
+
+
+class TestVisionIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.img = self.root / "frame.png"
+        self.img.write_bytes(make_solid_png())
+        self.s = get_settings().model_copy(update={
+            "simulate": True,
+            "dry_run": True,
+            "history_db": self.root / "hist.db",
+            "sim_state_file": self.root / "sim.json",
+            "vision_enabled": True,
+            "vision_cooldown_s": 10.0,
+            "vision_stay_cooldown_s": 30.0,
+            "vision_trigger_disarmed": False,
+            "vision_sim_image": self.img,
+            "vision_frames_dir": self.root / "frames",
+            "vision_max_frames": 10,
+            "agent_cooldown_s": 60.0,
+        })
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_bridge(self, mem, bus, coord, vision_worker=None, watchdog_s: float = 1.0):
+        clients: dict[str, _FakeA2AClient] = {}
+        reply = json.dumps({"resumo": "Verificado pelo agente de segurança.", "propostas": []})
+
+        def factory(key: str):
+            c = _FakeA2AClient(reply)
+            clients[key] = c
+            return c
+
+        br = AgentBridge(
+            mem, self.s, coord, bus,
+            urls={"seguranca": "http://127.0.0.1:9101/"},
+            client_factory=factory,
+            vision_worker=vision_worker,
+            vision_watchdog_s=watchdog_s,
+        ).start()
+        return br, clients
+
+    def test_bridge_defers_camera_motion_to_vision_and_sends_once(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+        coord = Coordinator(mem, self.s)
+        analyzer = MockVisionAnalyzer({
+            "has_person": True, "person_count": 1, "category": "person",
+            "window_or_door_open": True, "overall_confidence": 0.92,
+            "scene_note_pt": "Uma pessoa junto à janela aberta.",
+        })
+        worker = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=analyzer,
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        ).start()
+        bus.subscribe(worker.on_event, types=list(VISION_TRIGGER_EVENTS))
+        with patch.object(bridge_mod, "BATCH_S", 0.03):
+            br, clients = self._make_bridge(mem, bus, coord, vision_worker=worker, watchdog_s=0.5)
+            try:
+                bus.publish([_ev("camera_motion")])
+                self.assertTrue(_wait_for(lambda: "seguranca" in clients and len(clients["seguranca"].prompts) == 1))
+                time.sleep(0.15)  # make sure watchdog was cancelled and no duplicate call arrives
+                self.assertEqual(len(clients["seguranca"].prompts), 1)
+                prompt = clients["seguranca"].prompts[0]
+                self.assertIn("camera_analysis", prompt)
+                self.assertIn("pessoas=1", prompt)
+                self.assertIn("janela_aberta=sim", prompt)
+                self.assertIn("Uma pessoa junto à janela aberta.", prompt)
+            finally:
+                br.stop()
+                worker.stop()
+
+    def test_bridge_routes_immediately_when_vision_worker_dead(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+        coord = Coordinator(mem, self.s)
+        dead_worker = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=MockVisionAnalyzer(),
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        )  # not started -> is_alive() is False
+        with patch.object(bridge_mod, "BATCH_S", 0.03):
+            br, clients = self._make_bridge(mem, bus, coord, vision_worker=dead_worker, watchdog_s=5.0)
+            try:
+                bus.publish([_ev("camera_motion")])
+                self.assertTrue(_wait_for(lambda: "seguranca" in clients and len(clients["seguranca"].prompts) == 1))
+                self.assertIn("camera_motion", clients["seguranca"].prompts[0])
+            finally:
+                br.stop()
+
+    def test_bridge_watchdog_forwards_original_event_on_hung_vision(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+        coord = Coordinator(mem, self.s)
+
+        class HungWorker:
+            def is_alive(self) -> bool:
+                return True
+
+            def will_handle(self, event, state) -> bool:
+                return True
+
+        with patch.object(bridge_mod, "BATCH_S", 0.02):
+            br, clients = self._make_bridge(mem, bus, coord, vision_worker=HungWorker(), watchdog_s=0.1)
+            try:
+                bus.publish([_ev("camera_motion")])
+                self.assertTrue(_wait_for(lambda: "seguranca" in clients and len(clients["seguranca"].prompts) == 1))
+                prompt = clients["seguranca"].prompts[0]
+                self.assertIn("camera_motion", prompt)
+                self.assertIn("análise visual indisponível", prompt)
+            finally:
+                br.stop()
+
+    def test_security_alarm_and_camera_analysis_intentional_double_call(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+        coord = Coordinator(mem, self.s)
+        release_vision = threading.Event()
+
+        class SlowAnalyzer(MockVisionAnalyzer):
+            def analyze(self, image_bytes, *, context, room_name="", security_status="DISARMED", trigger_type="manual"):
+                release_vision.wait(2.0)
+                return super().analyze(
+                    image_bytes, context=context, room_name=room_name,
+                    security_status=security_status, trigger_type=trigger_type,
+                )
+
+        analyzer = SlowAnalyzer({
+            "has_person": True, "person_count": 1, "category": "person",
+            "window_or_door_open": True, "overall_confidence": 0.9,
+        })
+        worker = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=analyzer,
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        ).start()
+        bus.subscribe(worker.on_event, types=list(VISION_TRIGGER_EVENTS))
+        with patch.object(bridge_mod, "BATCH_S", 0.03):
+            br, clients = self._make_bridge(mem, bus, coord, vision_worker=worker, watchdog_s=2.0)
+            try:
+                # security_alarm goes straight to seguranca while camera_motion is deferred/deduped
+                bus.publish([_ev("security_alarm", kind="intrusion"), _ev("camera_motion")])
+                self.assertTrue(_wait_for(lambda: "seguranca" in clients and len(clients["seguranca"].prompts) == 1))
+                self.assertIn("security_alarm", clients["seguranca"].prompts[0])
+                # now let vision finish -> second call carries camera_analysis visual confirmation
+                release_vision.set()
+                self.assertTrue(_wait_for(lambda: len(clients["seguranca"].prompts) == 2))
+                self.assertIn("camera_analysis", clients["seguranca"].prompts[1])
+                self.assertIn("pessoas=1", clients["seguranca"].prompts[1])
+            finally:
+                release_vision.set()
+                br.stop()
+                worker.stop()
+
+    def test_bridge_cooldown_allows_warning_critical_and_dedups_info(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("AWAY"))
+        coord = Coordinator(mem, self.s)
+        br, _ = self._make_bridge(mem, bus, coord)
+        try:
+            warn_ev = to_event(
+                VisionObservation(room_id="r-sala", room_name="Sala", trigger_type="security_alarm", category="empty"),
+                armed=True,
+            )
+            crit_ev = to_event(
+                VisionObservation(room_id="r-sala", room_name="Sala", has_person=True, person_count=1, category="person"),
+                armed=True,
+            )
+            info_ev = to_event(
+                VisionObservation(room_id="r-sala", room_name="Sala", trigger_type="camera_motion", category="pet"),
+                armed=True,
+            )
+            self.assertEqual(warn_ev.severity, "warning")
+            self.assertEqual(crit_ev.severity, "critical")
+            self.assertEqual(info_ev.severity, "info")
+
+            # warning and critical are never suppressed by the 60s info cooldown
+            self.assertFalse(br._recently_sent("seguranca", warn_ev))
+            self.assertFalse(br._recently_sent("seguranca", crit_ev))
+            # info is suppressed on immediate repeat within 60s
+            self.assertTrue(br._recently_sent("seguranca", info_ev))
+        finally:
+            br.stop()
+
+    def test_fastapi_vision_endpoints_and_path_traversal(self):
+        mem, bus = SharedMemory(), EventBus()
+        mem.update_state(_sample_home_state("DISARMED"))
+        analyzer = MockVisionAnalyzer({
+            "has_person": False, "category": "empty", "window_or_door_open": False,
+            "overall_confidence": 0.95, "scene_note_pt": "Sala vazia com janela fechada.",
+        })
+        worker = VisionWorker(
+            mem, bus, self.s,
+            source=FileFrameSource(self.img),
+            analyzer=analyzer,
+            store=FrameStore(self.s.vision_frames_dir, 10),
+        ).start()
+        try:
+            app = create_app(mem, self.s, vision_worker=worker)
+            client = TestClient(app)
+
+            r0 = client.get("/tools/ultima_analise_camara")
+            self.assertEqual(r0.status_code, 200)
+            self.assertFalse(r0.json()["disponivel"])
+
+            r_post = client.post("/vision/analyze", json={"divisao": "Sala", "contexto": "intrusion"})
+            self.assertEqual(r_post.status_code, 200)
+            body = r_post.json()
+            self.assertEqual(body["status"], "ok")
+            self.assertEqual(body["category"], "empty")
+            self.assertIsNotNone(body["frame_path"])
+
+            r1 = client.get("/tools/ultima_analise_camara", params={"divisao": "Sala"})
+            self.assertEqual(r1.status_code, 200)
+            self.assertTrue(r1.json()["disponivel"])
+            self.assertEqual(r1.json()["id"], body["id"])
+
+            r_img = client.get(f"/vision/frames/{body['frame_path']}")
+            self.assertEqual(r_img.status_code, 200)
+            self.assertEqual(r_img.content, make_solid_png())
+
+            # path traversal blocked
+            r_bad = client.get("/vision/frames/..%2F..%2F.env")
+            self.assertEqual(r_bad.status_code, 404)
+
+            # 503 when vision_worker is not wired
+            app_no_vision = create_app(mem, self.s)
+            r_503 = TestClient(app_no_vision).post("/vision/analyze")
+            self.assertEqual(r_503.status_code, 503)
+        finally:
+            worker.stop()
+
+    def test_twin_area_and_security_tool_registration(self):
+        self.assertEqual(AREA_BY_EVENT["camera_analysis"], "Segurança")
+        self.assertIn(ultima_analise_camara, TOOLS_BY_AGENT["seguranca"])
+
+        mem = SharedMemory()
+        mem.update_state(_sample_home_state("AWAY"))
+        obs = VisionObservation(
+            room_id="r-sala", room_name="Sala", camera_id="cam-sala",
+            has_person=True, person_count=1, category="person", overall_confidence=0.85,
+        )
+        ev = to_event(obs, armed=True)
+        mem.set_vision(obs)
+        mem.add_events([ev])
+        self.assertEqual(event_view(ev)["area"], "Segurança")
+
+        st = twin_state(mem, self.s)
+        self.assertIsNotNone(st)
+        self.assertTrue(any(e["type"] == "camera_analysis" and e["area"] == "Segurança" for e in st["events"]))
+
+        # build_prompt compact line check
+        p = build_prompt([ev], mem.state)
+        self.assertIn("pessoas=1", p)
+        self.assertIn("confiança=0.85", p)
 
 
 if __name__ == "__main__":

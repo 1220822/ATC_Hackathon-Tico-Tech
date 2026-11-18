@@ -62,9 +62,16 @@ async def tendencia_temperatura(
     return await _get("/tools/tendencia_temperatura", divisao=divisao, horas=horas)
 
 
+@tool(description="Última análise visual da câmara (pessoas, estado da janela/porta, fumo visível, nota factual).")
+async def ultima_analise_camara(
+    divisao: Annotated[str | None, Field(description="Nome ou id da divisão; vazio = última disponível")] = None,
+) -> Any:
+    return await _get("/tools/ultima_analise_camara", divisao=divisao)
+
+
 TOOLS_BY_AGENT = {
     "coordenador": [],  # its prompt already has the whole house; with tools qwen kept calling them
-    "seguranca": [estado_casa, estado_divisao],
+    "seguranca": [estado_casa, estado_divisao, ultima_analise_camara],
     "energia": [estado_casa, estado_divisao, consumo_por_hora],
     "conforto": [estado_casa, estado_divisao, tendencia_temperatura],
 }

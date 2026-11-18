@@ -24,7 +24,7 @@ AREA_BY_EVENT = {
     "contact_opened": "Segurança", "contact_closed": "Segurança", "smoke_detected": "Emergência",
     "security_alarm": "Segurança", "alarm_cancelled": "Segurança", "security_mode_changed": "Segurança",
     "alarm_state_changed": "Segurança", "hub_alarm": "Segurança", "tamper_alarm": "Segurança",
-    "camera_motion": "Segurança", "camera_sound": "Segurança",
+    "camera_motion": "Segurança", "camera_sound": "Segurança", "camera_analysis": "Segurança",
     "temperature_changed": "Conforto", "temperature_dropping": "Conforto", "humidity_changed": "Conforto",
     "light_changed": "Conforto", "plug_switched": "Energia", "plug_power_changed": "Energia",
     "device_offline": "Sistema", "device_online": "Sistema", "tick": "Sistema",
