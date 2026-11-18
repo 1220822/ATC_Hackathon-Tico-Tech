@@ -727,9 +727,9 @@ class Coordinator:
     def execute(self, state: HomeState, dev: DeviceState, body: dict) -> dict:
         with self._lock:
             mcp = None
-            if self.s.simulate and dev.source != "sim":
-                # SIMULATE=true: the simulated house reuses the real device ids, so a write must never
-                # leave for the MCP, whatever the device says its source is
+            if self.s.simulate and dev.source != "sim" and self._mcp is None:
+                # SIMULATE=true: the simulated house reuses the real device ids, so a real MCP client is
+                # never created and the write goes to the simulator (an injected fake client still works)
                 dev = dev.model_copy(update={"source": "sim"})
                 state = state.model_copy(update={"devices": {**state.devices, dev.id: dev}})
             if not self.s.dry_run and dev.source == "mcp":
