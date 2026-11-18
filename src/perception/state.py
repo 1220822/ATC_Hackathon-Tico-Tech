@@ -443,6 +443,8 @@ def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Ev
         if a.event_type == "CANCEL":
             add("alarm_cancelled", "O alarme foi cancelado.", alarm=a.model_dump())
             continue
+        if a.event_type != "ALARM":  # AWAY / STAY / DISARMED (and isPre countdowns): mode changes,
+            continue                 # reported by security_mode_changed, not alarms
         kind = classify_alarm(a, settings)
         dev, inferred = _alarm_device(a, kind, curr)
         room_name = dev.room_name if dev else a.room_name

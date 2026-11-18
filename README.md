@@ -45,7 +45,9 @@ python scripts/simulate.py temp 18 --room cozinha
   do 3D são pedidos do utilizador e executam-se logo (sem LLM), depois das regras fixas.
 - `DRY_RUN=false` no `.env`: o Coordenador **atua na casa real** (luzes e tomadas, via
   `update_device_capabilities`). Com `DRY_RUN=true` só regista. Nunca arma nem desarma a segurança.
-- O fumo segue um caminho de emergência determinístico, sem LLM.
+- Regras fixas, sem LLM: **fumo** → desliga as tomadas e põe a luz a vermelho; **intrusão** (alarme
+  disparado com a casa em Home ou Away) → luz a vermelho no máximo, reposta como estava quando o
+  alarme é cancelado.
 
 ```powershell
 python -m src.api --agents                # casa real + agentes (num processo à parte) + 3D em /twin

@@ -245,7 +245,7 @@ class SimHome:
             if open_ and sec["status"] in ("STAY", "AWAY"):  # the real hub raises an intrusion
                 sec["isAlarmed"] = True
                 self._set(self._device(d, "gateway"), "alarmState", "alarm")
-                self._alarm(d, "ALARM", "INTRUSION", contact)
+                self._alarm(d, "ALARM", "INTRUSION_WARNING", contact)  # as the real hub reports it
             return contact
 
     def set_temperature(self, value: float, room: str | None = None) -> dict:
@@ -285,6 +285,7 @@ class SimHome:
             d["home"]["security"]["status"] = mode
             if mode == "DISARMED":
                 d["home"]["security"]["isAlarmed"] = False
+            self._alarm(d, mode)  # the real history also lists mode changes (eventType AWAY/STAY/DISARMED)
 
     def camera(self, motion: bool = True, sound: bool = False, room: str | None = None) -> dict:
         with self.edit() as d:

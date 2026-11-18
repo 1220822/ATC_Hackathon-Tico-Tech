@@ -8,7 +8,8 @@ outcome recorded as a Decision in SharedMemory (UI timeline / 3D balloons):
      src.agents.bridge -> consider(): hard guardrails, then the Coordinator agent (LLM, over A2A,
      self.arbiter) approves or rejects each one, then the guardrails again on the latest state
      (priority Emergência > Utilizador > Segurança > Energia > Conforto) and execute();
-  3. smoke: a deterministic emergency path (on_event) that never goes through an LLM.
+  3. fixed rules that never go through an LLM (on_event): smoke -> emergency protocol;
+     intrusion alarm -> lights red at full brightness, put back when the alarm is cancelled.
 
 Security (arm/disarm) is never written from here.
 """
@@ -24,7 +25,7 @@ from pydantic import BaseModel, Field
 from .agents.specs import AGENTS
 from .config import Settings
 from .memory import Decision, SharedMemory
-from .perception.state import DeviceState, Event, HomeState, de, em
+from .perception.state import DeviceState, Event, HomeState, _num, de, em, hue_rgb
 from .writes import UnknownDevice, guard_device, route_write
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class Coordinator:
         self._lock = threading.Lock()  # one write at a time
         self._approved: deque[tuple[float, str, str, str]] = deque(maxlen=200)  # ts, device, value, source
         self.emergency_active = False
+        self._light_before: dict[str, dict] = {}  # light state before an intrusion alarm
 
     # -- guard ---------------------------------------------------------------
     def guard(self, state: HomeState, device_id: str, cap: str, value: str) -> DeviceState:
@@ -244,15 +246,48 @@ class Coordinator:
                     message=f"Aprovo a proposta {de(agent)}: {what}." + (f" {motivo}." if motivo else "") + f" {note}")))
             return out
 
-    # -- 3. emergency (deterministic, no LLM) -------------------------------------
+    # -- 3. fixed rules (deterministic, no LLM): smoke and intrusion -----------------
+    FIXED_RULE_EVENTS = ("smoke_detected", "security_alarm", "alarm_cancelled")
+
     def on_event(self, event: Event) -> None:
-        """Bus subscriber for smoke_detected / alarm_cancelled."""
+        """Bus subscriber for FIXED_RULE_EVENTS."""
         if event.type == "smoke_detected":
             self.emergency(event)
-        elif event.type == "alarm_cancelled" and self.emergency_active:
-            self.emergency_active = False
-            self.memory.add_decision(Decision(agent="Emergência", status="informação",
-                                              message="Alarme cancelado: fim do protocolo de emergência."))
+        elif event.type == "security_alarm" and event.data.get("kind") == "intrusion":
+            self.intrusion(event)
+        elif event.type == "alarm_cancelled":
+            if self.emergency_active:
+                self.emergency_active = False
+                self.memory.add_decision(Decision(agent="Emergência", status="informação",
+                                                  message="Alarme cancelado: fim do protocolo de emergência."))
+            if self._light_before:
+                self.end_intrusion()
+
+    @staticmethod
+    def _red_light_steps(d: DeviceState) -> list[tuple[DeviceState, dict]]:
+        r, g, b = EMERGENCY_RGB  # colour first, then brightness (see docs/capabilities/probes)
+        return [(d, {"type": "power", "value": "on"}),
+                (d, {"type": "color_rgb", "redValue": r, "greenValue": g, "blueValue": b}),
+                (d, {"type": "brightness", "value": 100})]
+
+    def _run_steps(self, state: HomeState, steps: list[tuple[DeviceState, dict]], source: str) -> tuple[str, str]:
+        """Execute every step (keep going on failures) -> (status, note) for one Decision."""
+        results = []
+        for dev, body in steps:
+            try:
+                results.append(self.execute(state, dev, body)["dry_run"])
+            except Exception as e:  # every step counts
+                log.warning("%s: step failed on %s: %s", source, dev.id, e)
+                results.append(None)
+            if body["type"] == "power":
+                self._remember(dev.id, body["value"], source)
+        if None in results:
+            return "erro", "Alguns passos falharam (ver o log)."
+        if results and all(results):
+            return "dry-run", "Dry-run: nada foi enviado."
+        if results:
+            return "executada", "Feito."
+        return "informação", "Não havia nada a mudar."
 
     def emergency(self, event: Event) -> Decision | None:
         state = self.memory.state
@@ -265,40 +300,79 @@ class Coordinator:
                 steps.append((d, {"type": "power", "value": "off"}))
         for d in state.devices_by_role("light"):
             if d.online:
-                r, g, b = EMERGENCY_RGB  # colour first, then brightness (see docs/capabilities/probes)
-                steps += [(d, {"type": "power", "value": "on"}),
-                          (d, {"type": "color_rgb", "redValue": r, "greenValue": g, "blueValue": b}),
-                          (d, {"type": "brightness", "value": 100})]
-        results = []
-        for dev, body in steps:
-            try:
-                results.append(self.execute(state, dev, body)["dry_run"])
-            except Exception as e:  # keep going: every step counts in an emergency
-                log.warning("emergency step failed on %s: %s", dev.id, e)
-                results.append(None)
-            if body["type"] == "power":
-                self._remember(dev.id, body["value"], "Emergência")
+                steps += self._red_light_steps(d)
+        status, note = self._run_steps(state, steps, "Emergência")
         n_plugs = sum(1 for dev, b in steps if dev.role == "plug")
         actions = []
         if n_plugs:
             actions.append("desligar " + ("a tomada" if n_plugs == 1 else f"{n_plugs} tomadas"))
         if any(dev.role == "light" for dev, _ in steps):
             actions.append("pôr a luz a vermelho no máximo")
+        if status == "informação":
+            note = "Não havia nada para desligar."
         where = em(event.room_name) if event.room_name else "em casa"
-        if None in results:
-            status, note = "erro", "Alguns passos falharam (ver o log)."
-        elif results and all(results):
-            status, note = "dry-run", "Dry-run: nada foi enviado."
-        elif results:
-            status, note = "executada", "Feito."
-        else:
-            status, note = "informação", "Não havia nada para desligar."
         return self.memory.add_decision(Decision(
             agent="Emergência", status=status, device_id=event.device_id, room=event.room,
             room_name=event.room_name,
             action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
             message=f"Fumo {where}: protocolo de emergência (sem LLM)"
                     + (": " + " e ".join(actions) if actions else "") + f". {note}"))
+
+    def intrusion(self, event: Event) -> Decision | None:
+        """Intrusion alarm (house armed, a sensor fired): lights red at full brightness. The state
+        of each light before the first alarm is kept and put back when the alarm is cancelled.
+        Re-triggers of the same alarm do nothing if the light is already red."""
+        state = self.memory.state
+        if state is None:
+            return None
+        steps: list[tuple[DeviceState, dict]] = []
+        for d in state.devices_by_role("light"):
+            if not d.online:
+                continue
+            already = (d.caps.get("power") == "on" and hue_rgb(d.caps.get("color_rgb")) == EMERGENCY_RGB
+                       and _num(d.caps.get("brightness")) == 100)
+            if already:
+                continue
+            self._light_before.setdefault(d.id, {"power": d.caps.get("power"),
+                                                 "hue": hue_rgb(d.caps.get("color_rgb")),
+                                                 "brightness": _num(d.caps.get("brightness"))})
+            steps += self._red_light_steps(d)
+        if not steps:
+            return None
+        status, note = self._run_steps(state, steps, "Emergência")  # top priority for 5 min
+        where = em(event.room_name) if event.room_name else "em casa"
+        light = steps[0][0]
+        return self.memory.add_decision(Decision(
+            agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,
+            action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
+            message=f"Intrusão {where}: luz a vermelho no máximo (regra fixa, sem LLM). {note}"))
+
+    def end_intrusion(self) -> Decision | None:
+        """Alarm cancelled: put each light back as it was before the intrusion alarm."""
+        state = self.memory.state
+        before, self._light_before = self._light_before, {}
+        if state is None:
+            return None
+        steps: list[tuple[DeviceState, dict]] = []
+        for dev_id, prev in before.items():
+            d = state.devices.get(dev_id)
+            if d is None or not d.online:
+                continue
+            if prev["hue"]:
+                r, g, b = prev["hue"]
+                steps.append((d, {"type": "color_rgb", "redValue": r, "greenValue": g, "blueValue": b}))
+            if prev["brightness"] is not None:
+                steps.append((d, {"type": "brightness", "value": prev["brightness"]}))
+            if prev["power"] == "off":
+                steps.append((d, {"type": "power", "value": "off"}))
+        if not steps:
+            return None
+        status, note = self._run_steps(state, steps, "Segurança")
+        light = steps[0][0]
+        return self.memory.add_decision(Decision(
+            agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,
+            action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
+            message=f"Alarme cancelado: luz reposta como estava antes da intrusão. {note}"))
 
     # -- the only write path ----------------------------------------------------
     def _run(self, state: HomeState, dev: DeviceState, body: dict) -> tuple[str, str]:

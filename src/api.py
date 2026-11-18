@@ -233,8 +233,8 @@ def main() -> None:
     settings = get_settings()
     memory, bus = SharedMemory(), EventBus()
     coordinator = Coordinator(memory, settings)
-    # emergency path: deterministic, straight from the bus, never through an LLM
-    bus.subscribe(coordinator.on_event, types=["smoke_detected", "alarm_cancelled"])
+    # fixed rules, straight from the bus, never through an LLM: smoke and intrusion
+    bus.subscribe(coordinator.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
     agents_proc = None
     if settings.agents_enabled:
         from .agents.bridge import AgentBridge

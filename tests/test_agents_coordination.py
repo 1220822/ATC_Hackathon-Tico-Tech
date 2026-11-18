@@ -249,6 +249,77 @@ class TestEmergencyWrites(HouseTestCase):
         self.assertEqual(st.cap("light", "brightness"), 100)
 
 
+class TestIntrusionWrites(HouseTestCase):
+    dry_run = False
+
+    def setUp(self):
+        super().setUp()
+        self.bus.subscribe(self.coord.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
+        self.home.set_contact(False)
+        self.home.apply_capability(LIGHT, {"type": "color_rgb", "redValue": 0, "greenValue": 255, "blueValue": 85})
+        self.home.apply_capability(LIGHT, {"type": "brightness", "value": 40})
+        self.refresh()
+
+    def test_arming_is_not_an_alarm(self):
+        self.home.set_security("away")
+        types = [e.type for e in self.refresh()]
+        self.assertIn("security_mode_changed", types)
+        self.assertNotIn("security_alarm", types)
+        self.assertEqual(self.decisions("Segurança"), [])
+
+    def test_red_on_intrusion_and_back_on_cancel(self):
+        self.home.set_security("away")
+        self.refresh()
+        self.home.set_contact(True)  # the hub raises ALARM / INTRUSION_WARNING
+        events = self.refresh()
+        self.assertIn("security_alarm", [e.type for e in events])
+        d = self.decisions("Segurança")[0]
+        self.assertEqual(d.status, "executada")
+        self.assertIn("Intrusão na Sala: luz a vermelho no máximo (regra fixa, sem LLM)", d.message)
+        self.refresh()
+        st = self.memory.state
+        self.assertEqual(st.light_hue_rgb, (255, 0, 0))
+        self.assertEqual(st.cap("light", "brightness"), 100)
+
+        self.home.set_contact(False)
+        self.home.set_contact(True)  # re-trigger: the light is already red, nothing new
+        self.refresh()
+        self.assertEqual(len(self.decisions("Segurança")), 1)
+
+        self.home.cancel_alarm()
+        self.refresh()
+        self.assertIn("luz reposta como estava", self.decisions("Segurança")[-1].message)
+        self.refresh()
+        st = self.memory.state
+        self.assertEqual(st.light_hue_rgb, (0, 255, 85))
+        self.assertEqual(st.cap("light", "brightness"), 40)
+        self.assertEqual(st.cap("light", "power"), "on")
+
+    def test_light_switched_off_again_after_cancel(self):
+        self.home.apply_capability(LIGHT, {"type": "power", "value": "off"})
+        self.home.set_security("stay")  # Home mode also fires on the window sensor
+        self.refresh()
+        self.home.set_contact(True)
+        self.refresh()
+        self.refresh()
+        self.assertEqual(self.memory.state.cap("light", "power"), "on")
+        self.home.cancel_alarm()
+        self.refresh()
+        self.refresh()
+        self.assertEqual(self.memory.state.cap("light", "power"), "off")
+
+
+class TestIntrusionDryRun(HouseTestCase):
+    def test_dry_run(self):
+        self.bus.subscribe(self.coord.on_event, types=list(Coordinator.FIXED_RULE_EVENTS))
+        self.home.set_contact(False)
+        self.home.set_security("away")
+        self.refresh()
+        self.home.set_contact(True)
+        self.refresh()
+        self.assertEqual(self.decisions("Segurança")[0].status, "dry-run")
+
+
 class TestBridgeOverA2A(HouseTestCase):
     """Real A2A (HTTP JSON-RPC) to an agent server backed by a fake chat client."""
 
