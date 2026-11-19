@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 IntentName = Literal["pergunta_estado", "alterar_preferencia", "criar_regra", "configurar_layout",
                      "responder_proposta", "responder_sugestao", "comando_dispositivo", "outro"]
 Topic = Literal["temperatura", "humidade", "janela", "energia", "luz", "aquecedor", "seguranca", "geral",
-                "sugestoes", "regras", "preferencias"]
+                "sugestoes", "regras", "preferencias", "presenca"]
 Relation = Literal["esquerda", "direita", "frente", "tras", "junto_janela", "junto_porta", "centro", "canto",
                    "ao_lado"]
 
@@ -36,10 +36,12 @@ class PrefRequest(BaseModel):
 
 
 class RuleCondition(BaseModel):
-    sensor: Literal["janela", "temperatura", "humidade", "aquecedor", "luz"]
+    sensor: Literal["janela", "temperatura", "humidade", "aquecedor", "luz"] = Field(
+        description='"janela" = o sensor de contacto, seja de uma janela ou de uma porta')
     divisao: str | None = None
     operador: Literal["=", ">", "<"] = "="
-    valor: str | float | None = Field(None, description="aberta/fechada, ligado/desligado, ou um número")
+    valor: str | float | None = Field(None, description='aberta/fechada, ligado/desligado, um número, ou "alvo" '
+                                         '(a temperatura alvo do utilizador: "quando a temperatura estiver boa")')
 
 
 class RuleAction(BaseModel):
@@ -105,12 +107,15 @@ class ChatIntent(BaseModel):
 SYSTEM = """És o classificador do chat de uma casa inteligente (português de Portugal).
 Classifica a mensagem do utilizador numa intenção e extrai os campos. Intenções:
 - pergunta_estado: perguntas sobre a casa agora ou no passado ("a janela da sala está fechada?",
-  "quanto gastei ontem?", "tens alguma sugestão?" -> topico "sugestoes").
+  "quanto gastei ontem?", "tens alguma sugestão?" -> topico "sugestoes"). Perguntas sobre pessoas ou
+  pedidos para ver/olhar pela câmara ("está alguém na sala?", "vê na câmara se há alguém") -> topico
+  "presenca" (a casa analisa a imagem da câmara nesse momento).
 - alterar_preferencia: muda um parâmetro ou o modo de agir: temperatura alvo (setpoint_c, com
   inicio/fim se houver horário: "de manhã" = 07:00-09:00, "à noite" = 21:00-23:59), intervalo de conforto,
   humidade máxima, autonomia (categoria energia|conforto|seguranca|luz e nivel auto|perguntar|nunca),
   horas de silêncio (quiet_hours), nota livre.
-- criar_regra: "se ... então/avisa-me/liga/desliga ..." (condições com sensores e ações).
+- criar_regra: "se ... então/avisa-me/liga/desliga ..." (condições com sensores e ações). Uma porta ou
+  janela que abre/fecha é sempre o sensor "janela" (o sensor de contacto).
 - configurar_layout: onde ficam divisões ou dispositivos no 3D ("o quarto fica à direita da sala",
   "o sensor de temperatura está junto à janela"). Também janelas e portas da planta: acrescentar,
   mudar (parede, posição ao longo da parede, largura, altura) ou remover -> preenche "abertura"
@@ -118,7 +123,8 @@ Classifica a mensagem do utilizador numa intenção e extrai os campos. Intenç�
   "passa a janela do quarto para a parede da esquerda", "remove a janela do quarto").
 - responder_proposta: aprova, rejeita ou altera uma proposta pendente ("sim, desliga", "não").
 - responder_sugestao: responde a uma sugestão ("aceito", "não voltes a sugerir isto" -> resposta silenciar).
-- comando_dispositivo: ordem direta ("liga a luz do quarto", "arma a casa").
+- comando_dispositivo: ordem direta ("liga a luz do quarto", "arma a casa"). Segurança: "armar_casa" = modo
+  em casa (stay); "armar_ausente" = modo ausente / away / "vou sair"; "desarmar".
 - outro: qualquer outra coisa.
 Divisões da casa: {rooms}. Não inventes valores que a mensagem não tenha."""
 
@@ -198,10 +204,14 @@ def find_level(t: str) -> str | None:
     return None
 
 
-def _cond_from(part: str, rooms: list[str]) -> list[RuleCondition]:
+GOOD_TEMP = re.compile(r"\b(boa|bom|agradave\w*|confortave\w*|no ponto|ideal|quentinh\w*|aquecid\w*|alvo|"
+                       r"suficiente|como (eu )?gosto)\b")
+
+
+def _cond_from(part: str, rooms: list[str], full: str = "") -> list[RuleCondition]:
     conds = []
     room = find_room(part, rooms)
-    if re.search(r"janela", part):
+    if re.search(r"janela|porta", part):  # the contact sensor (watches a window or a door)
         val = "fechada" if re.search(r"fech", part) else "aberta"
         conds.append(RuleCondition(sensor="janela", divisao=room, valor=val))
     for sensor, word in (("temperatura", r"temperatura|graus"), ("humidade", r"humidade")):
@@ -211,6 +221,8 @@ def _cond_from(part: str, rooms: list[str]) -> list[RuleCondition]:
             if m:
                 op = "<" if m.group(1) in ("abaixo", "menos", "inferior", "baixar", "descer", "desce", "menor") else ">"
                 conds.append(RuleCondition(sensor=sensor, divisao=room, operador=op, valor=_num(m.group(2))))
+            elif sensor == "temperatura" and GOOD_TEMP.search(full or part):  # "quando estiver boa"
+                conds.append(RuleCondition(sensor="temperatura", divisao=room, operador=">", valor="alvo"))
     if re.search(r"aquecedor|tomada", part):
         val = "desligado" if re.search(r"deslig", part) else "ligado"
         conds.append(RuleCondition(sensor="aquecedor", divisao=room, valor=val))
@@ -241,8 +253,13 @@ def extract_rule(text: str, rooms: list[str]) -> RuleRequest:
     m = re.match(r"^(?:quero que )?(?:se|quando|sempre que)\s+(.*?)(?:,|\bentao\b|\b(?=avisa|liga|desliga|acende|apaga|poe|mete|notifica))(.*)$", t)
     cond_part, act_part = (m.group(1), m.group(2)) if m else (t, t)
     # "com o aquecedor ligado" inside the condition stays a condition
-    conds = _cond_from(cond_part, rooms)
+    conds = _cond_from(cond_part, rooms, t)
     acts = _actions_from(act_part, rooms)
+    if not acts and any(c.sensor == "temperatura" for c in conds):  # "…está boa, desliga": the heater
+        if re.search(r"\bdeslig", act_part):
+            acts.append(RuleAction(dispositivo="aquecedor", divisao=find_room(act_part, rooms), acao="desligar"))
+        elif re.search(r"\bliga", act_part):
+            acts.append(RuleAction(dispositivo="aquecedor", divisao=find_room(act_part, rooms), acao="ligar"))
     avisar = bool(re.search(r"avisa|notifica|diz-me|alerta|manda-me", act_part))
     return RuleRequest(condicoes=conds, acoes=acts, avisar=avisar or not acts)
 
@@ -381,12 +398,31 @@ def extract_layout(text: str, rooms: list[str]) -> LayoutRequest | None:
     return None
 
 
+SEC_AWAY = re.compile(r"\baway\b|ausen|\bfora\b|\bsai(r|mos|o)?\b|ninguem em casa")
+SEC_STAY = re.compile(r"\bstay\b|modo (casa|em casa|presenca)|estou em casa|estamos em casa|\bpresenca\b")
+
+
+def security_command(t: str) -> str | None:
+    """armar_casa | armar_ausente | desarmar from a normalised message, or None. Covers "arma a casa",
+    "arma o alarme em modo away", "ativa a segurança, vou sair", "quero em modo away", "desarma"."""
+    if re.search(r"\bdesarm|\b(desativa|desliga|para|cala)r? (o alarme|a seguranca|a sirene)|"
+                 r"\bfalso alarme\b|\balarme falso\b", t):
+        return "desarmar"
+    arm = re.search(r"\b(arma|armar|arme|armes)\b", t) or \
+        re.search(r"\b(ativa|ativar|liga|ligar)\b.*\b(alarme|seguranca)\b", t)
+    mode_only = re.search(r"\bmodo (away|ausente|ausencia|fora|stay|casa|em casa|presenca)\b", t)
+    if not (arm or mode_only):
+        return None
+    if SEC_AWAY.search(t):
+        return "armar_ausente"
+    return "armar_casa"
+
+
 def extract_command(text: str, rooms: list[str]) -> CommandRequest | None:
     t = norm(text)
-    if re.search(r"^(arma|ativa) (a casa|o alarme)", t):
-        return CommandRequest(dispositivo="seguranca", acao="armar_ausente" if re.search(r"sai|ausente|fora", t) else "armar_casa")
-    if re.search(r"^(desarma|desativa) (a casa|o alarme)", t):
-        return CommandRequest(dispositivo="seguranca", acao="desarmar")
+    sec = security_command(t)
+    if sec is not None:
+        return CommandRequest(dispositivo="seguranca", acao=sec)
     m = re.match(r"^(?:podes |consegues )?(liga|desliga|acende|apaga)r?\s+(?:a |o )?(luz|aquecedor|tomada)", t)
     if m:
         on = m.group(1) in ("liga", "acende")
@@ -395,8 +431,11 @@ def extract_command(text: str, rooms: list[str]) -> CommandRequest | None:
     return None
 
 
+PRESENCE = re.compile(r"\bcamara|\balguem\b|\bpessoas?\b|\bquem (esta|ha|e que)|\bpresen|\bintrus")
+
+
 def topic_of(t: str) -> str:
-    for pat, topic in ((r"sugest", "sugestoes"), (r"regra", "regras"), (r"o que sabes|preferenc", "preferencias"),
+    for pat, topic in ((PRESENCE.pattern, "presenca"), (r"sugest", "sugestoes"), (r"regra", "regras"), (r"o que sabes|preferenc", "preferencias"),
                        (r"janela|porta|fechad|abert", "janela"), (r"humidade|humido", "humidade"),
                        (r"gast|consum|energia|kwh|fatura|eletricidade|custo", "energia"),
                        (r"temperatura|graus|frio|calor|quente", "temperatura"), (r"aquecedor|tomada", "aquecedor"),
@@ -448,6 +487,8 @@ def classify_rules(text: str, rooms: list[str], pending_decision: bool = False,
     cmd = extract_command(text, rooms)
     if cmd is not None:
         return ChatIntent(intent="comando_dispositivo", divisao=room, comando=cmd)
+    if PRESENCE.search(t):  # "está alguém na sala?", "vê na câmara se há alguém"
+        return ChatIntent(intent="pergunta_estado", divisao=room, topico="presenca", periodo="agora")
     if not t.endswith("?") and re.search(
             r"\b(quero|prefiro|gosto|define|mete|poe|coloca|muda|altera|mantem|podes|nao me|lembra-te|nota)\b"
             r"|sozinh|nunca|maxim|minim|limite", t):
@@ -457,6 +498,85 @@ def classify_rules(text: str, rooms: list[str], pending_decision: bool = False,
     if t.endswith("?") or re.match(r"^(quanto|qual|quais|como|esta|estao|ha|tens|o que|a que|que|quando|mostra|diz-me)\b", t):
         return ChatIntent(intent="pergunta_estado", divisao=room, topico=topic_of(t), periodo=period_of(t))
     return ChatIntent(intent="outro", divisao=room)
+
+
+# ------------------------------------------------------------------ several requests in one message
+
+ACTION_START = re.compile(r"(arma|desarma|liga|desliga|acende|apaga|ativa|desativa|poe|mete|coloca|define|muda|"
+                          r"cria|ve|verifica|diz|mostra|fecha|abre|quero|aumenta|baixa|sobe)\b")
+
+
+def split_requests(text: str) -> list[str]:
+    """«Vou sair, arma a casa e liga o aquecedor» -> ["Vou sair", "arma a casa", "liga o aquecedor"].
+    Splits on "," / ";" / " e " / " depois " only before an action verb; a rule ("se …, desliga … e liga …")
+    is one request."""
+    t = norm(text)
+    if re.match(r"^(quero que )?(se|quando|sempre que)\b", t):
+        return [text]
+    parts, start = [], 0
+    for m in re.finditer(r"\s*(?:[,;]\s*(?:e\s+|depois\s+)?|\s+e\s+(?:depois\s+)?|\s+depois\s+)", text):
+        rest = norm(text[m.end():])
+        if ACTION_START.match(rest):
+            parts.append(text[start:m.start()])
+            start = m.end()
+    parts.append(text[start:])
+    return [p.strip(" ,;.") for p in parts if p.strip(" ,;.")]
+
+
+def understood(i: ChatIntent) -> bool:
+    """False when the fast reading did not get enough to act on (then the chat thinks it over)."""
+    if i.intent == "outro":
+        return False
+    if i.intent == "criar_regra":
+        return bool(i.regra and i.regra.condicoes and (i.regra.acoes or i.regra.avisar))
+    if i.intent == "alterar_preferencia":
+        return i.preferencia is not None
+    if i.intent == "comando_dispositivo":
+        return i.comando is not None
+    if i.intent == "configurar_layout":
+        return i.layout is not None or i.abertura is not None
+    return True
+
+
+class ChatPlan(BaseModel):
+    pedidos: list[ChatIntent] = Field(default_factory=list, max_length=4,
+                                      description="um item por pedido da mensagem, pela ordem em que aparecem")
+
+
+PLAN_EXTRA = """
+A mensagem pode ter VÁRIOS pedidos: devolve um item em "pedidos" para cada um, pela ordem. Pensa no que o
+utilizador quer de facto:
+- "vou sair" / "não está ninguém" + armar -> comando_dispositivo seguranca armar_ausente; "arma a casa" sem
+  dizer que sai -> armar_casa.
+- "quando a temperatura estiver boa / no ponto, desliga" -> criar_regra com a condição temperatura, operador
+  ">", valor "alvo" (a temperatura alvo do utilizador), e a ação desligar o aquecedor.
+- configurar_layout (o 3D): "alvo" é a divisão ou o dispositivo a mover e "referencia" é a divisão onde ele
+  está ou para onde o utilizador o quer ("põe o detetor de fumo no quarto" -> alvo "detetor de fumo",
+  referencia "Quarto"; "para dentro do quarto" sem outro sítio -> relacao "centro"). Nunca troques a
+  divisão que o utilizador disse por outra.
+- Frases que só dão contexto ("vou sair", "para a casa ficar quentinha") não são pedidos à parte.
+- Se uma parte não for possível, usa a intenção "outro" para essa parte."""
+
+
+def plan(text: str, llm, rooms: list[str], pending_decision: bool = False, pending_suggestion: bool = False,
+         reasoning_effort: str = "medium") -> list[ChatIntent] | None:
+    """The slow path: the LLM thinks it over (reasoning) and returns every request in the message."""
+    from ..llm import LLMError
+    ctx = []
+    if pending_decision:
+        ctx.append("Há uma proposta pendente à espera de resposta.")
+    if pending_suggestion:
+        ctx.append("Há uma sugestão pendente à espera de resposta.")
+    try:
+        got = llm.structured(SYSTEM.replace("{rooms}", ", ".join(rooms) or "(nenhuma)") + PLAN_EXTRA,
+                             (" ".join(ctx) + "\n" if ctx else "") + f"Mensagem: {text}", ChatPlan,
+                             reasoning_effort=reasoning_effort)
+    except LLMError as e:
+        log.info("chat plan (reasoning) failed: %s", e)
+        return None
+    for i in got.pedidos:
+        i.origem = "llm"
+    return got.pedidos or None
 
 
 def classify(text: str, llm, rooms: list[str], pending_decision: bool = False,
@@ -478,6 +598,12 @@ def classify(text: str, llm, rooms: list[str], pending_decision: bool = False,
         log.info("chat classifier falling back to rules: %s", e)
         return rules
     got.origem = "llm"
+    # the rules are exact for these; the LLM sometimes reads "desliga o aquecedor" as an answer to a
+    # proposal (none is pending) or misses that the user wants the camera
+    if rules.intent == "comando_dispositivo" or (rules.intent == "pergunta_estado" and rules.topico == "presenca"):
+        return rules
+    if got.intent == "responder_proposta" and not pending_decision and not got.sempre and rules.intent != "outro":
+        return rules
     # fields the rules extracted reliably fill what the LLM left out
     if got.intent == rules.intent:
         for f in ("divisao", "topico", "periodo", "preferencia", "regra", "layout", "abertura", "comando", "resposta"):

@@ -103,13 +103,13 @@
         2.35,
         0.25
       ],
-      "rotation_y": 45.0,
+      "rotation_y": 52.1,
       "mount": "corner",
       "opening": null,
       "target": [
-        1.0,
-        1.0,
-        4.0
+        2.5,
+        0.0,
+        2.0
       ]
     },
     "ef8015f6-d7af-4da6-b48a-f1d0e7630b3e": {

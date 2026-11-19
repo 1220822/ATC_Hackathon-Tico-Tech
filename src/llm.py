@@ -45,13 +45,14 @@ class LLM:
                    reasoning_effort=settings.llm_reasoning_effort)
 
     # -- transport -------------------------------------------------------------------
-    def _openai(self, messages: list[dict], schema: dict | None) -> str:
+    def _openai(self, messages: list[dict], schema: dict | None, effort: str | None = None) -> str:
         if self._client is None:
             from openai import OpenAI
             self._client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.timeout_s, max_retries=0)
         kwargs: dict = {"model": self.model, "messages": messages, "temperature": 0.1}
-        if self.reasoning_effort:
-            kwargs["reasoning_effort"] = self.reasoning_effort
+        effort = self.reasoning_effort if effort is None else effort
+        if effort:
+            kwargs["reasoning_effort"] = effort
         if schema is not None and self._schema_ok:
             kwargs["response_format"] = {"type": "json_schema",
                                          "json_schema": {"name": "resposta", "schema": schema}}
@@ -69,10 +70,13 @@ class LLM:
                 raise
         return r.choices[0].message.content or ""
 
-    def complete(self, messages: list[dict], schema: dict | None = None) -> str:
+    def complete(self, messages: list[dict], schema: dict | None = None, reasoning_effort: str | None = None) -> str:
+        """reasoning_effort overrides LLM_REASONING_EFFORT for this call (e.g. "medium" to think it over)."""
         t = time.time()
         try:
-            return (self._complete or self._openai)(messages, schema)
+            if self._complete is not None:
+                return self._complete(messages, schema)
+            return self._openai(messages, schema, reasoning_effort)
         finally:
             self.last_latency_s = round(time.time() - t, 2)
 
@@ -89,7 +93,8 @@ class LLM:
         threading.Thread(target=run, name="llm-warmup", daemon=True).start()
 
     # -- structured ------------------------------------------------------------------
-    def structured(self, system: str, user: str, model: type[T], retries: int = 1) -> T:
+    def structured(self, system: str, user: str, model: type[T], retries: int = 1,
+                   reasoning_effort: str | None = None) -> T:
         schema = model.model_json_schema()
         messages = [{"role": "system", "content": system + "\n\nResponde APENAS com um objeto JSON que siga "
                      "este schema:\n" + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))},
@@ -97,7 +102,7 @@ class LLM:
         last_err = "sem resposta"
         for attempt in range(retries + 1):
             try:
-                text = self.complete(messages, schema)
+                text = self.complete(messages, schema, reasoning_effort)
             except Exception as e:  # noqa: BLE001 - down / timeout
                 raise LLMError(f"LLM indisponível ({type(e).__name__}: {str(e)[:120]})") from None
             try:

@@ -141,6 +141,7 @@ class Coordinator:
         self._approved: deque[tuple[float, str, str, str]] = deque(maxlen=200)  # ts, device, value, source
         self.emergency_active = False
         self._light_before: dict[str, dict] = {}  # light state before an intrusion alarm
+        self._disarmed_at = 0.0  # when the user last confirmed "desarmar"
         self._verify: list = []  # (light, rgb, brightness) to read back after the next steps
 
     # -- guard ---------------------------------------------------------------
@@ -531,14 +532,24 @@ class Coordinator:
                     f"{CATEGORY_PT.get(category, category)}. Fica registada."))
 
     # -- 3. fixed rules (deterministic, no LLM): smoke and intrusion -----------------
-    FIXED_RULE_EVENTS = ("smoke_detected", "security_alarm", "alarm_cancelled")
+    FIXED_RULE_EVENTS = ("smoke_detected", "security_alarm", "alarm_cancelled", "security_mode_changed", "tick",
+                         "camera_analysis")
+    PERSON_MIN_CONFIDENCE = 0.6
 
     def on_event(self, event: Event) -> None:
         """Bus subscriber for FIXED_RULE_EVENTS."""
         if event.type == "smoke_detected":
             self.emergency(event)
         elif event.type == "security_alarm" and event.data.get("kind") == "intrusion":
-            self.intrusion(event)
+            state = self.memory.state
+            if state is not None and state.armed and not self._just_disarmed(state):
+                self.intrusion(event)  # a late alarm-history entry after disarming is not an intrusion
+        elif event.type == "camera_analysis" and self._person_while_away(event):
+            # The hub does not always fire (entry delay, sensor outside its zones): a person seen by the
+            # camera with the house armed AWAY is an intrusion on its own. In STAY people are at home.
+            self.intrusion(event, cause="pessoa vista na câmara com a casa armada (ausente)")
+        elif event.type in ("security_mode_changed", "tick"):
+            self.no_red_when_disarmed()
         elif event.type == "alarm_cancelled":
             if self.emergency_active:
                 self.emergency_active = False
@@ -659,7 +670,15 @@ class Coordinator:
             message=f"Fumo {where}: protocolo de emergência (sem LLM)"
                     + (": " + " e ".join(actions) if actions else "") + f". {note}"))
 
-    def intrusion(self, event: Event) -> Decision | None:
+    def _person_while_away(self, event: Event) -> bool:
+        state = self.memory.state
+        d = event.data if isinstance(event.data, dict) else {}
+        return (state is not None and state.security_status == "AWAY" and not self._just_disarmed(state)
+                and d.get("status") == "ok"
+                and bool(d.get("has_person"))
+                and float(d.get("overall_confidence") or 0) >= self.PERSON_MIN_CONFIDENCE)
+
+    def intrusion(self, event: Event, cause: str = "") -> Decision | None:
         """Intrusion alarm (house armed, a sensor fired): lights red at full brightness. The state
         of each light before the first alarm is kept and put back when the alarm is cancelled.
         Re-triggers of the same alarm do nothing if the light is already red."""
@@ -687,9 +706,64 @@ class Coordinator:
         return self._persist_fixed(event, "Segurança", Decision(
             agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,
             action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
-            message=f"Intrusão {where}: luz a vermelho no máximo (regra fixa, sem LLM). {note}"))
+            message=f"Intrusão {where}{' (' + cause + ')' if cause else ''}: luz a vermelho no máximo "
+                    f"(regra fixa, sem LLM). {note}"))
 
-    def end_intrusion(self) -> Decision | None:
+    def no_red_when_disarmed(self, force: bool = False, reason: str = "Casa desarmada") -> Decision | None:
+        """House disarmed and no smoke emergency: no light stays in the intrusion red. Lights saved before
+        the intrusion go back as they were; any other light still red (e.g. after a restart, when that
+        memory is gone) goes back to white at the same brightness. force: the user has just disarmed,
+        do not wait for the next snapshot (nor for the hub to drop isAlarmed)."""
+        state = self.memory.state
+        if state is None or self.emergency_active:
+            return None
+        silenced = self.memory.alarm_silenced(state)
+        if not force and (state.armed or (state.is_alarmed and not silenced)):
+            return None
+        if self._light_before:
+            return self.end_intrusion(reason=reason)
+        steps: list[tuple[DeviceState, dict]] = []
+        for d in state.devices_by_role("light"):
+            if d.online and d.caps.get("power") == "on" and hue_rgb(d.caps.get("color_rgb")) == EMERGENCY_RGB:
+                steps += self._light_steps(d, (255, 255, 255), _num(d.caps.get("brightness")))
+                self._verify.append((d, (255, 255, 255), _num(d.caps.get("brightness"))))
+        if not steps:
+            return None
+        status, note = self._run_steps(state, steps, "Segurança")
+        self._check_lights_later()
+        light = steps[0][0]
+        return self._persist_fixed(Event(type="security_mode_changed", message="Casa desarmada com a luz a vermelho."),
+                                   "Segurança", Decision(
+            agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,
+            action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
+            message=f"{reason}: a luz deixa de estar a vermelho (volta a branco). {note}"))
+
+    JUST_DISARMED_S = 60.0
+
+    def _just_disarmed(self, state: HomeState) -> bool:
+        """The user disarmed a moment ago and the snapshot still predates it: what arrives now (a late
+        camera analysis, the alarm entry of the alarm just stopped) is not a new intrusion."""
+        return time.time() - self._disarmed_at < self.JUST_DISARMED_S and state.ts <= self._disarmed_at
+
+    def stop_alarm(self) -> Decision | None:
+        """The user confirmed "desarmar" (e.g. "fui eu, foi falso alarme"): the alarm ends now on our
+        side: smoke protocol off, lights back as they were (or white), the hub's alarm reset, and the
+        twin stops showing it even if the hub keeps reporting isAlarmed for a while."""
+        state = self.memory.state
+        self._disarmed_at = time.time()
+        self.emergency_active = False
+        if state is None:
+            return None
+        self.memory.silence_alarm(state.alarms[0].key if state.alarms else "")
+        for hub in state.devices_by_role("hub"):  # best effort: the MCP may not accept this write
+            if hub.caps.get("alarmState") == "alarm":
+                try:
+                    self.execute(state, hub, {"type": "alarmState", "value": "normal"})
+                except Exception as e:  # noqa: BLE001
+                    log.warning("could not reset the hub alarm %s: %s", hub.id, e)
+        return self.no_red_when_disarmed(force=True, reason="Desarmada por ti")
+
+    def end_intrusion(self, reason: str = "") -> Decision | None:
         """Alarm cancelled: put each light back as it was before the intrusion alarm."""
         state = self.memory.state
         before, self._light_before = self._light_before, {}
@@ -712,7 +786,7 @@ class Coordinator:
         return self._persist_fixed({"type": "alarm_cancelled"}, "Segurança", Decision(
             agent="Segurança", status=status, device_id=light.id, room=light.room_id, room_name=light.room_name,
             action={"passos": [{"device_id": d.id, **b} for d, b in steps]},
-            message=f"Alarme cancelado: luz reposta como estava antes da intrusão. {note}"))
+            message=f"{reason or 'Alarme cancelado'}: luz reposta como estava antes da intrusão. {note}"))
 
     def _persist_fixed(self, trigger, agent: str, decision: Decision) -> Decision:
         """Fixed rules (no LLM, no preferences, no autonomy level): always executed."""
@@ -867,6 +941,7 @@ class Coordinator:
         return {"status": status, "note": note}
 
     SECURITY_MODES = {"armar_casa": "STAY", "armar_ausente": "AWAY", "desarmar": "DISARMED"}
+    MCP_SECURITY_STATUS = {"STAY": "stay", "AWAY": "away", "DISARMED": "disarm"}
 
     def set_security(self, mode: str, confirmed: bool) -> dict:
         """Arm/disarm: always needs the user's explicit confirmation (no autonomy level, no agent)."""
@@ -874,9 +949,29 @@ class Coordinator:
             raise RequestRefused("armar ou desarmar exige sempre a tua confirmação")
         if mode not in ("STAY", "AWAY", "DISARMED"):
             raise RequestRefused("modo de segurança inválido")
-        out = self.execute_tool("patch_home_security_status", {"status": mode})
+        # MCP schema: {"body": {"status": "disarm|stay|away", "armDelay": [], "alarmDelay": []}}
+        args = {"body": {"status": self.MCP_SECURITY_STATUS[mode], "armDelay": [], "alarmDelay": []}}
+        try:
+            out = self.execute_tool("patch_home_security_status", args)
+        except Exception as e:  # noqa: BLE001 - an MCP failure must become a chat answer, not a 500
+            self._persist(status="rejected", explanation=f"Segurança → {mode}: falhou ({e}).", agent="Utilizador",
+                          autonomy="confirmacao", trigger={"type": "chat_security"},
+                          decision={"tool": "patch_home_security_status", "status": mode})
+            raise RequestRefused(f"o MCP recusou a mudança de segurança ({str(e)[:120]})") from None
         status = "dry_run" if out["dry_run"] else "executed"
         note = "Dry-run: nada foi enviado." if out["dry_run"] else "Feito."
+        if mode == "DISARMED":
+            try:
+                st = self.memory.state
+                active = (self.emergency_active or bool(self._light_before) or st is not None and (
+                    st.is_alarmed or any(h.caps.get("alarmState") == "alarm" for h in st.devices_by_role("hub"))))
+                self.stop_alarm()
+                if active:
+                    note += " Alarme desligado."
+            except Exception:  # noqa: BLE001 - the disarm itself went through
+                log.exception("stop_alarm failed")
+        else:
+            self.memory.silence_alarm(None)  # armed again: the next alarm counts
         self._persist(status=status, explanation=f"Segurança → {mode}, confirmado por ti. {note}", agent="Utilizador",
                       autonomy="confirmacao", trigger={"type": "chat_security"},
                       decision={"tool": "patch_home_security_status", "status": mode})
@@ -899,8 +994,11 @@ def _sim_tool(settings, tool: str, args: dict):
                 sc["isActive"] = bool(args.get("isActive"))
                 result = sc
     elif tool == "patch_home_security_status":
-        data["security"] = args.get("status")
-        result = {"status": args.get("status")}
+        body = args.get("body") or args
+        data["security"] = body.get("status")
+        result = {"status": body.get("status")}
+        from .sim.home import make_sim_home
+        make_sim_home(settings).set_security(str(body.get("status")))  # the simulated house follows
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     return result

@@ -166,6 +166,28 @@ class TestDiff(SimTestCase):
         alarm = next(e for e in ev if e.type == "security_alarm")
         self.assertEqual(alarm.data["kind"], "intrusion")
 
+    def test_arming_brings_back_an_old_alarm_no_intrusion(self):
+        """Seen 19/11: arming at 17:07 made the MCP list again the alarm of 16:07 -> it is not new."""
+        self.home.set_security("away")
+        self.home.set_contact(True)  # an alarm an hour ago
+        old = self.home.snapshot()
+        entry = next(e for e in old["alarm_history"] if e["eventType"] == "ALARM")
+        entry["eventTimestamp"] -= 3600 * 1000
+        self.home.set_contact(False)
+        self.home.set_security("disarm")
+        disarmed = self.home.snapshot()
+        disarmed["alarm_history"] = [e for e in disarmed["alarm_history"] if e["eventType"] != "ALARM"]
+        self.home.set_security("away")
+        armed = self.home.snapshot()
+        armed["alarm_history"] = [entry] + [e for e in armed["alarm_history"] if e["eventType"] != "ALARM"]
+        ev = diff(normalize(disarmed, self.s), normalize(armed, self.s), self.s)
+        self.assertNotIn("security_alarm", types(ev))
+        self.assertIn("security_mode_changed", types(ev))
+        # a real alarm right after arming still counts
+        self.home.set_contact(True)
+        ev = diff(normalize(armed, self.s), self.snap(), self.s)
+        self.assertIn("security_alarm", types(ev))
+
     def test_smoke_detected_once(self):
         a = self.snap()
         self.home.smoke()

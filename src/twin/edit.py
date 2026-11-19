@@ -14,12 +14,13 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from ..perception.state import HomeState, de, em, fmt
-from .layout import DeviceLayout, Layout, LayoutError, Opening, RoomLayout, load_layout
+from .layout import (DeviceLayout, Layout, LayoutError, Opening, RoomLayout, active_layout_file,  # noqa: F401
+                     camera_view, load_layout, user_layout_file)
 
 ROLE_WORDS = {"sensor de temperatura": "temperature", "luz": "light", "aquecedor": "plug", "câmara": "camera",
               "camara": "camera", "detetor de fumo": "smoke", "sensor de contacto": "contact", "central": "hub"}
 NOUN_PT = {"temperature": "o sensor de temperatura", "light": "a luz", "plug": "o aquecedor", "camera": "a câmara",
-           "smoke": "o detetor de fumo", "contact": "o sensor da janela", "hub": "a central"}
+           "smoke": "o detetor de fumo", "contact": "o sensor de contacto", "hub": "a central"}
 REL_PT = {"direita": "à direita", "esquerda": "à esquerda", "frente": "à frente", "tras": "atrás",
           "ao_lado": "ao lado", "junto_janela": "junto à janela", "junto_porta": "junto à porta",
           "centro": "no centro", "canto": "no canto"}
@@ -78,13 +79,18 @@ class LayoutProblem(ValueError):
     """The change cannot be applied (message in PT-PT)."""
 
 
-def user_layout_file(settings) -> Path:
-    return Path(settings.history_db).parent / "layout_user.json"
-
-
-def active_layout_file(settings) -> Path:
-    user = user_layout_file(settings)
-    return user if user.exists() else Path(settings.layout_file)
+def _nearest_opening(room: dict, x: float, z: float, max_d: float = 1.0) -> dict | None:
+    """Door / window of the room whose centre (on the floor plan) is closest to (x, z), within max_d m."""
+    best, best_d = None, max_d
+    for wall in room["walls"]:
+        for o in wall["openings"]:
+            ox, oz = {"north": (o["offset"], 0.0), "south": (o["offset"], room["depth"]),
+                      "west": (0.0, o["offset"]), "east": (room["width"], o["offset"])}[wall["side"]]
+            dist = max(abs(ox - x) - o["width"] / 2, 0.0) + abs(oz - z) if wall["side"] in ("north", "south") \
+                else max(abs(oz - z) - o["width"] / 2, 0.0) + abs(ox - x)
+            if dist <= best_d:
+                best, best_d = o, dist
+    return best
 
 
 def _overlap(a: RoomLayout, b: RoomLayout) -> bool:
@@ -124,10 +130,20 @@ class LayoutEditor:
                     break
         if role is None:
             return None
-        if ref_room and state.room(ref_room):
-            d = state.by_role(role, state.room(ref_room).id)
+        room = state.room(ref_room) if ref_room else None
+        if room is not None:
+            d = state.by_role(role, room.id)
             if d:
                 return d
+            # never fall back to the same kind of device in another room: devices keep the room the
+            # house gives them (get_home), so «põe o detetor de fumo no quarto» cannot be done here
+            other = state.by_role(role)
+            noun = NOUN_PT.get(role, alvo)
+            if other is None:
+                raise LayoutProblem(f"não há {noun.split(' ', 1)[1]} {em(room.name)}")
+            raise LayoutProblem(f"{noun} está {em(other.room_name)}, não {em(room.name)}. No 3D só mudo onde fica "
+                                f"dentro da divisão que a casa lhe dá; se mudou mesmo de divisão, muda-o primeiro "
+                                f"na app da casa")
         return state.by_role(role)
 
     def apply(self, req, state: HomeState) -> tuple[Layout, Layout, str]:
@@ -200,7 +216,7 @@ class LayoutEditor:
             y = 1.4 if dev.role != "contact" else o.get("sill", 0) + o["height"] / 2
             x, z = {"north": (along, WALL_GAP), "south": (along, d - WALL_GAP),
                     "west": (WALL_GAP, along), "east": (w - WALL_GAP, along)}[side]
-            cur["mount"] = "window" if dev.role == "contact" else "wall"
+            cur["mount"] = ("window" if kind == "window" else "door") if dev.role == "contact" else "wall"
             if dev.role == "contact":
                 cur["opening"] = o["id"]
             cur["rotation_y"] = {"north": 0.0, "south": 180.0, "west": 90.0, "east": -90.0}[side]
@@ -219,6 +235,9 @@ class LayoutEditor:
         else:
             raise LayoutProblem("não percebi onde fica")
         cur["position"] = [round(x, 2), round(y, 2), round(z, 2)]
+        if dev.role == "camera":  # wherever it goes, it keeps looking at the whole room
+            target, cur["rotation_y"], _ = camera_view(room, cur["position"], cur.get("rotation_y", 0.0))
+            cur["target"] = list(target)
         data["devices"][dev.id] = cur
         return Layout.model_validate(data), \
             f"Pus {NOUN_PT.get(dev.role, dev.name)} {REL_PT.get(rel, rel)} {em(dev.room_name)}.{extra}"
@@ -317,7 +336,7 @@ class LayoutEditor:
             changes.append(f"peitoril a {fmt(sill)} m")
         what = f"Mudei a {noun} {where}: " + (", ".join(changes) or "sem alterações") + "."
         if watchers:
-            what += " O sensor da janela foi com ela."
+            what += f" O sensor da {noun} foi com ela."
         return before, self._validated(data), what
 
     @staticmethod
@@ -414,6 +433,10 @@ class LayoutEditor:
             cur = data["devices"].get(did) or {"room_id": dev.room_id, "name": dev.name, "mount": "wall"}
             cur["position"] = rel
             cur["room_id"] = dev.room_id
+            if dev.role == "contact":  # dragged next to a door / window: it now watches that one
+                near = _nearest_opening(room, rel[0], rel[2])
+                if near is not None:
+                    cur["opening"], cur["mount"] = near["id"], near["type"]
             data["devices"][did] = cur
         new = [RoomLayout.model_validate(r) for r in data["rooms"].values()]
         for i, a in enumerate(new):

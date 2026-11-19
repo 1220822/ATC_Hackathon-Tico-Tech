@@ -283,8 +283,9 @@ class SimHome:
         mode = {"disarm": "DISARMED", "stay": "STAY", "away": "AWAY"}.get(mode.lower(), mode.upper())
         with self.edit() as d:
             d["home"]["security"]["status"] = mode
-            if mode == "DISARMED":
+            if mode == "DISARMED":  # disarming stops the siren
                 d["home"]["security"]["isAlarmed"] = False
+                self._set(self._device(d, "gateway"), "alarmState", "normal")
             self._alarm(d, mode)  # the real history also lists mode changes (eventType AWAY/STAY/DISARMED)
 
     def camera(self, motion: bool = True, sound: bool = False, room: str | None = None) -> dict:

@@ -261,23 +261,24 @@ def window_heater(history, state: HomeState, now: float, min_days: int, lookback
     hours = [round(sum(e - s for s, e in by_day[d]) / 3600, 1) for d in days]
     wh = sum(history.energy_wh(None, s, e, plug.id) for s, e in both)
     n = len(days)
+    noun = contact.opening_noun  # porta | janela (3D layout)
     rule = {"condicoes": [{"sensor": "janela", "divisao": contact.room_name, "valor": "aberta"},
                           {"sensor": "aquecedor", "divisao": plug.room_name, "valor": "ligado"}],
             "acoes": [{"dispositivo": "aquecedor", "divisao": plug.room_name, "acao": "desligar"}], "avisar": True}
     consumo = (f"consumiu {fmt(wh / 1000, 2)} kWh nesses períodos" if wh >= 1
                else "quase não consumiu nesses períodos, mas podia ter aquecido para a rua")
-    text = (f"Em {n} dias, a janela {de(contact.room_name)} esteve aberta com o aquecedor {de(plug.room_name)} "
+    text = (f"Em {n} dias, a {noun} {de(contact.room_name)} esteve aberta com o aquecedor {de(plug.room_name)} "
             f"ligado ({', '.join(f'{fmt(h, 1)} h a {d}' for d, h in zip(days, hours))}). O aquecedor {consumo}. "
-            f"Queres que eu desligue o aquecedor sempre que a janela abrir?")
+            f"Queres que eu desligue o aquecedor sempre que a {noun} abrir?")
     return [Insight(
         key=f"window_heater:{contact.id}:{plug.id}", type="window_heater", agent="energia",
         evidence=Evidence(room=plug.room_id, room_name=plug.room_name, metric="power_w", window="", days=days,
                           values=hours, unit="h", days_with_data=lookback, spans=both[:20]),
         confidence=round(min(0.95, 0.5 + 0.15 * n), 2),
         proposed_action=ProposedAction(kind="scenario", rule=rule,
-                                       description=f"desligar o aquecedor {de(plug.room_name)} quando a janela "
+                                       description=f"desligar o aquecedor {de(plug.room_name)} quando a {noun} "
                                                    f"{de(contact.room_name)} abrir"),
-        benefit=f"Evita aquecer com a janela aberta ({fmt(wh / 1000, 2)} kWh nestas ocorrências).",
+        benefit=f"Evita aquecer com a {noun} aberta ({fmt(wh / 1000, 2)} kWh nestas ocorrências).",
         text=text)]
 
 

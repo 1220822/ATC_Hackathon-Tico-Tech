@@ -96,7 +96,7 @@ def _event_line(e: Event) -> str:
     note = str(d.get("scene_note_pt") or "").strip()
     note_part = f', nota="{note}"' if note else ""
     return (f"{base} [pessoas={d.get('person_count', 0)}, categoria={d.get('category', 'unclear')}, "
-            f"janela_aberta={win_str}, fumo={smoke_str}, confiança={conf_str}{note_part}]")
+            f"janela_ou_porta_aberta={win_str}, fumo={smoke_str}, confiança={conf_str}{note_part}]")
 
 
 def build_prompt(events: list[Event], state: HomeState, now: float | None = None,

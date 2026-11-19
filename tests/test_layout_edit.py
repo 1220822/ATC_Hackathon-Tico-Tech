@@ -77,6 +77,33 @@ class TestNaturalLanguage(LayoutCase):
         with self.assertRaises(LayoutProblem):
             self.ed.apply(LayoutRequest(alvo="Sala", relacao="direita", referencia="Sala"), self.memory.state)
 
+    def test_device_is_never_taken_from_another_room(self):
+        # the smoke detector is in the Sala: «põe-no no quarto» must not move the one in the Sala instead
+        before = self.ed.current()
+        with self.assertRaises(LayoutProblem) as e:
+            self.ed.apply(LayoutRequest(alvo="detetor de fumo", relacao="centro", referencia="Quarto"),
+                          self.memory.state)
+        self.assertIn("na Sala, não no Quarto", str(e.exception))
+        self.assertEqual(self.ed.current(), before)
+
+    def test_layout_requests_always_go_through_the_llm_thinking(self):
+        from src.chat.intents import ChatIntent, ChatPlan
+        calls = []
+
+        class LLM:
+            def structured(self, system, user, schema, reasoning_effort=None):
+                calls.append(reasoning_effort)
+                lay = LayoutRequest(alvo="detetor de fumo", relacao="centro", referencia="Quarto")
+                intent = ChatIntent(intent="configurar_layout", divisao="Quarto", layout=lay)
+                return ChatPlan(pedidos=[intent]) if schema is ChatPlan else intent
+
+        self.chat.llm = LLM()
+        self.chat.s = self.s.model_copy(update={"chat_reasoning_effort": "medium"})
+        msgs = self.chat.handle("move o detetor de fumo para dentro do quarto")
+        self.assertIn("medium", calls)  # understood on the fast path, and still thought over
+        self.assertIn("está na Sala, não no Quarto", msgs[-1]["text"])
+        self.assertNotIn("Ficou bem?", msgs[-1]["text"])
+
     def test_twin_uses_the_user_layout(self):
         self.chat.handle("O quarto fica à frente da sala")
         st = twin_state(self.memory, self.s)

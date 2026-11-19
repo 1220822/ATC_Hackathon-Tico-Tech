@@ -13,8 +13,8 @@ Endpoints (rooms by id or name):
     GET /historic/rooms/{id}/{metric}?start=&end=             raw readings (epoch seconds)
     GET /historic/aggregated/{agg}/rooms/{id}/{metric}?period_s=&start=&end=
     GET /home/energy                                          current power per room + MCP yesterdayConsumption
-    GET /twin                                                 3D digital twin (Three.js, served locally)
-    GET /twin/state?n=30                                      digital twin: layout + device values + events
+    GET /twin                                                 the house in 3D (Three.js, served locally)
+    GET /twin/state?n=30                                      3D view: layout + device values + events
     GET /twin/stream                                          the same, live (Server-Sent Events)
     POST /coordinator/request {device_id, action: on|off}     user request -> Coordinator (guard, dry-run)
     POST /chat {text}                                         chat with the Coordinator -> new messages
@@ -33,11 +33,12 @@ import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -56,6 +57,9 @@ from .vision.capture import resolve_frame_path
 from .writes import UnknownDevice
 
 
+MJPEG_PART = b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n"
+
+
 class VisionAnalyzeRequest(BaseModel):
     divisao: str | None = None
     contexto: Literal["intrusion", "smoke", "general"] = "general"
@@ -72,6 +76,16 @@ class KnowledgeEditIn(BaseModel):
 class LayoutManualIn(BaseModel):
     rooms: dict[str, dict] = Field(default_factory=dict)
     devices: dict[str, dict] = Field(default_factory=dict)
+
+
+class KnowledgeSetpointIn(BaseModel):
+    divisao_id: str = Field(min_length=1, max_length=100)
+    c: float
+
+
+class KnowledgeAutonomyIn(BaseModel):
+    categoria: str = Field(min_length=1, max_length=30)
+    nivel: str = Field(min_length=1, max_length=30)
 
 
 class KnowledgeEraseIn(BaseModel):
@@ -189,6 +203,16 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
             "moeda": st.energy.tariff_currency,
         }
 
+    @app.middleware("http")
+    async def revalidate_ui(request: Request, call_next):
+        """The UI files change between runs: the browser must revalidate them (ETag, cheap) instead of
+        reusing an old twin.js / chat.js from its cache."""
+        response = await call_next(request)
+        path = request.url.path
+        if path in ("/", "/twin") or path.startswith(("/twin/ui/", "/chat/ui/")):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     app.mount("/static", StaticFiles(directory=UI_DIR / "static"), name="static")  # vendored Three.js
     app.mount("/twin/ui", StaticFiles(directory=UI_DIR / "twin"), name="twin-ui")
     app.mount("/chat/ui", StaticFiles(directory=UI_DIR / "chat"), name="chat-ui")
@@ -245,6 +269,43 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
         media = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         return FileResponse(path, media_type=media)
 
+    @app.get("/vision/live/status")
+    def vision_live_status():
+        live = vision_worker is not None and vision_worker.has_live
+        return {"vision": vision_worker is not None, "live": live,
+                "online": bool(live and vision_worker.live_jpeg() is not None),
+                "error": vision_worker.live_error if live else "", "model": settings.vision_model}
+
+    @app.get("/vision/live.jpg")
+    def vision_live_jpg():
+        """Newest frame of the RTSP camera (what the vision model would see now)."""
+        if vision_worker is None or not vision_worker.has_live:
+            raise HTTPException(503, "Sem câmara em direto (CAMERA_RTSP_URL).")
+        data = vision_worker.live_jpeg(wait_s=8.0)
+        if data is None:
+            raise HTTPException(503, vision_worker.live_error or "A câmara ainda não enviou imagens.")
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/vision/live.mjpg")
+    def vision_live_mjpg(fps: float = Query(5, ge=0.5, le=15)):
+        """Live feed as MJPEG (an <img> plays it). Ends when the client goes away."""
+        if vision_worker is None or not vision_worker.has_live:
+            raise HTTPException(503, "Sem câmara em direto (CAMERA_RTSP_URL).")
+
+        def frames():
+            last = None
+            while True:
+                data = vision_worker.live_jpeg(wait_s=10.0)
+                if data is None:
+                    return
+                if data is not last:
+                    last = data
+                    yield (MJPEG_PART % len(data)) + data + b"\r\n"
+                time.sleep(1.0 / fps)
+
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"Cache-Control": "no-store"})
+
     @app.post("/vision/analyze")
     def vision_analyze(req: VisionAnalyzeRequest | None = None):
         """Manual on-demand visual analysis (runs in FastAPI threadpool)."""
@@ -290,6 +351,10 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
     def chat_messages(after: int = Query(0, ge=0), n: int = Query(100, ge=1, le=500)):
         return need_chat().store.after(after, n)
 
+    @app.post("/chat/clear")
+    def chat_clear():
+        return {"apagadas": need_chat().clear()}
+
     @app.post("/chat/action")
     def chat_action(a: ChatActionIn):
         return {"messages": need_chat().action(a.action, a.id, a.response, a.comment)}
@@ -319,6 +384,22 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
             return knowledge().revoke(pid)
         except KnowledgeError as e:
             raise HTTPException(404, str(e)) from None
+
+    @app.post("/knowledge/setpoint")
+    def knowledge_setpoint(body: KnowledgeSetpointIn):
+        from .knowledge import KnowledgeError
+        try:
+            return knowledge().set_setpoint(body.divisao_id, body.c, memory.state)
+        except (KnowledgeError, ValueError) as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/knowledge/autonomy")
+    def knowledge_autonomy(body: KnowledgeAutonomyIn):
+        from .knowledge import KnowledgeError
+        try:
+            return knowledge().set_autonomy(body.categoria, body.nivel)
+        except (KnowledgeError, ValueError) as e:
+            raise HTTPException(400, str(e)) from None
 
     @app.post("/knowledge/erase")
     def knowledge_erase(body: KnowledgeEraseIn):
@@ -454,6 +535,7 @@ def main() -> None:
         from .vision.worker import VISION_TRIGGER_EVENTS, VisionWorker
         vision_worker = VisionWorker(memory, bus, settings).start()
         vision_worker.warmup_async()
+        chat.vision = vision_worker
         bus.subscribe(vision_worker.on_event, types=list(VISION_TRIGGER_EVENTS))
     bridge = None
     agents_proc = None

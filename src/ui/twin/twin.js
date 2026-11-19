@@ -1,4 +1,4 @@
-// Digital twin of the house: Three.js scene fed by /twin/state + /twin/stream (SSE).
+// The house in 3D: Three.js scene fed by /twin/state + /twin/stream (SSE).
 // Only shows what get_home reports (rooms and devices); the layout only says where things are.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/OrbitControls.js";
@@ -47,14 +47,14 @@ const areaColor = (area) => `var(${AREA_VAR[area] || "--a-sistema"})`;
 const host = $("cena");
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "low-power" });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));  // light on integrated GPUs
-renderer.setClearColor(0x0f1319);
+renderer.setClearColor(0x0b0f15);
 host.append(renderer.domElement);
 const labels = new CSS2DRenderer();
 Object.assign(labels.domElement.style, { position: "absolute", top: "0", left: "0", pointerEvents: "none" });
 host.append(labels.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x0f1319, 30, 60);
+scene.fog = new THREE.Fog(0x0b0f15, 30, 60);
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -66,7 +66,7 @@ scene.add(new THREE.HemisphereLight(0xdde6ff, 0x2a2f38, 1.6));
 const sun = new THREE.DirectionalLight(0xffffff, 1.1);
 sun.position.set(-6, 12, 9);
 scene.add(sun);
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x161b23, roughness: 1 }));
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x111720, roughness: 1 }));
 ground.rotation.x = -Math.PI / 2;
 ground.position.y = -0.01;
 scene.add(ground);
@@ -109,7 +109,7 @@ let selected = null;  // selected device id
 
 function structureKey(st) {
   return JSON.stringify([st.rooms.map((r) => [r.id, r.name, r.x, r.z, r.width, r.depth, r.height, r.walls]),
-    st.devices.map((d) => [d.id, d.role, d.position, d.rotation_y, d.opening, d.target])]);
+    st.devices.map((d) => [d.id, d.role, d.position, d.rotation_y, d.opening, d.target, d.view_radius])]);
 }
 
 function disposeWorld() {
@@ -316,9 +316,10 @@ function buildDevice(w, d, st) {
         const from = new THREE.Vector3().fromArray(d.position), to = new THREE.Vector3().fromArray(d.target);
         const dir = to.clone().sub(from);
         const len = dir.length();
-        const geo = new THREE.ConeGeometry(len * 0.3, len, 28, 1, true);
+        // view_radius: the cone reaches the farthest corner of the room (the camera covers it all)
+        const geo = new THREE.ConeGeometry(d.view_radius || len * 0.3, len, 28, 1, true);
         geo.translate(0, -len / 2, 0);  // apex at the camera
-        const coneMat = new THREE.MeshBasicMaterial({ color: 0x6aa8ff, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide });
+        const coneMat = new THREE.MeshBasicMaterial({ color: 0x8fb4e8, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide });
         const cone = new THREE.Mesh(geo, coneMat);
         cone.position.copy(from);
         cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir.normalize());
@@ -381,11 +382,14 @@ function focusRoom(id) {
 $("ver-casa").addEventListener("click", () => viewHouse());
 
 // ------------------------------------------------------------------ applying state
+// diverging scale (dataviz): cold blue <-> neutral grey at the comfort temperature <-> warm red.
+const HEAT = { cold: new THREE.Color(0x3987e5), mid: new THREE.Color(0x3a404b), warm: new THREE.Color(0xe66767) };
 function heatColor(t, disp) {
-  const blue = new THREE.Color(0x3b7cff), green = new THREE.Color(0x33c27a), red = new THREE.Color(0xff4d4d);
-  if (t == null) return new THREE.Color(0x394150);
-  if (t <= disp.heat_mid_c) return blue.lerp(green, THREE.MathUtils.clamp((t - disp.heat_min_c) / (disp.heat_mid_c - disp.heat_min_c), 0, 1));
-  return green.lerp(red, THREE.MathUtils.clamp((t - disp.heat_mid_c) / (disp.heat_max_c - disp.heat_mid_c), 0, 1));
+  if (t == null) return HEAT.mid.clone();
+  if (t <= disp.heat_mid_c) {
+    return HEAT.mid.clone().lerp(HEAT.cold, THREE.MathUtils.clamp((disp.heat_mid_c - t) / (disp.heat_mid_c - disp.heat_min_c), 0, 1));
+  }
+  return HEAT.mid.clone().lerp(HEAT.warm, THREE.MathUtils.clamp((t - disp.heat_mid_c) / (disp.heat_max_c - disp.heat_mid_c), 0, 1));
 }
 
 function applyState(st) {
@@ -401,8 +405,8 @@ function applyState(st) {
     const wr = world.rooms[r.id];
     wr.data = r;
     const heat = r.temperature_c == null ? null : heatColor(r.temperature_c, disp);
-    wr.floorMat.color.copy(heat ? heat.clone().multiplyScalar(0.55) : new THREE.Color(0x394150));
-    wr.floorMat.emissive.copy(heat ? heat.clone().multiplyScalar(0.35) : new THREE.Color(0x000000));
+    wr.floorMat.color.copy(heat ? heat.clone().multiplyScalar(0.62) : new THREE.Color(0x2a313c));
+    wr.floorMat.emissive.copy(heat ? heat.clone().multiplyScalar(0.18) : new THREE.Color(0x000000));
     wr.smoke = r.smoke;
     wr.fog.visible = r.smoke;
     wr.particles.visible = r.smoke;
@@ -434,7 +438,7 @@ function applyDevice(wd, d, st) {
       if (op) {
         op.target = op.base + (v.open ? op.swing * 1.2 : 0);
         const amber = v.open && st.security.armed;
-        op.leafMat.color.copy(amber ? new THREE.Color(0xf2b13c) : op.baseColor);
+        op.leafMat.color.copy(amber ? new THREE.Color(0xfab219) : op.baseColor);
         op.leafMat.opacity = amber ? 0.7 : 0.38;
       }
       break;
@@ -478,33 +482,52 @@ function applyDevice(wd, d, st) {
 }
 
 function renderHeader(st) {
-  $("casa").textContent = st.home_name ? `Gémeo digital · ${st.home_name}` : "Gémeo digital";
+  $("casa-nome").textContent = st.home_name || "";
   const modo = $("modo");
-  modo.textContent = (st.mode === "simulado" ? "Simulado (réplica)" : "MCP real") + (st.dry_run ? " · dry-run" : " · atua");
-  modo.className = "badge" + (st.mode === "simulado" ? " simulado" : "");
+  modo.textContent = (st.mode === "simulado" ? "Casa simulada" : "Casa real (MCP)") + (st.dry_run ? " · só regista" : " · atua");
+  modo.className = "modo" + (st.mode === "simulado" ? " simulado" : st.dry_run ? "" : " atua");
   modo.title = st.dry_run ? "Dry-run: o Coordenador regista as decisões mas não envia nada à casa."
     : "O Coordenador executa as decisões aprovadas na casa.";
   const seg = $("seguranca");
-  seg.textContent = `Segurança: ${MODE_PT[st.security.status] || st.security.status}`;
-  seg.className = "badge " + (st.security.armed ? "armada" : "desarmada");
-  $("alarme").hidden = !st.alarm.any;
-  $("alarme").textContent = st.alarm.smoke ? "FUMO · EM ALARME" : "EM ALARME";
+  const alarm = st.alarm;
+  seg.textContent = alarm.any ? "Em alarme" : (MODE_PT[st.security.status] || st.security.status);
+  seg.className = "seguranca " + (alarm.any ? "alarme" : st.security.armed ? "armada" : "desarmada");
+  renderAlarm(st);
   renderAgents(st.agents || []);
   const av = $("avisos");
   av.hidden = !st.warnings.length;
   av.replaceChildren(...st.warnings.map((w) => el("div", null, w)));
 }
 
+// Alarm band: what is alarming, and the way out (the chat asks for the confirmation to disarm)
+let alarmSince = null;
+function renderAlarm(st) {
+  const a = st.alarm;
+  $("alarme").hidden = !a.any;
+  if (!a.any) { alarmSince = null; return; }
+  alarmSince ??= Date.now() / 1000;
+  const room = a.smoke_room && st.rooms.find((r) => r.id === a.smoke_room);
+  $("alarme-titulo").textContent = a.smoke ? `Fumo detetado${room ? ` · ${room.name}` : ""}`
+    : a.intrusion ? "Possível intrusão: a casa está em alarme" : a.hub ? "A central de segurança está em alarme"
+    : "A casa está em alarme";
+  $("alarme-sub").textContent = `desde as ${hhmm(alarmSince)} · se foste tu, diz-me no chat ou desliga aqui`;
+}
+$("alarme-desligar").addEventListener("click", () => {
+  window.dispatchEvent(new CustomEvent("tt:chat-send", { detail: "Foi falso alarme, desliga o alarme" }));
+});
+
 // LLM agents (A2A) as the Coordinator sees them: waiting, online, thinking, unavailable
 function renderAgents(agents) {
   const box = $("agentes");
   box.replaceChildren(...agents.map((a) => {
-    const cls = a.busy ? "ocupado" : a.online === true ? "online" : a.online === false ? "offline" : "";
-    const label = a.busy ? "a pensar…" : a.online === true ? (a.last_latency_s != null ? `${nf1.format(a.last_latency_s)} s` : "pronto")
-      : a.online === false ? "indisponível" : "à espera";
-    const chip = el("span", `agente ${cls}`, el("span", "ponto"), a.name, el("small", null, label));
+    const cls = a.busy ? "ocupado" : a.online === true ? "online" : a.online === false ? "offline" : "espera";
+    const label = a.busy ? "a pensar" : a.online === true ? (a.last_latency_s != null ? `${nf1.format(a.last_latency_s)} s` : "pronto")
+      : a.online === false ? "indisponível" : "em espera";  // never called yet: nothing for it so far
+    const chip = el("span", `agente ${cls}${a.name === "Coordenador" ? " coordenador" : ""}`, el("span", "id"), a.name, el("small", null, label));
     chip.style.setProperty("--area", areaColor(a.name));
-    chip.title = a.last_error ? `${a.name} (A2A ${a.url}): ${a.last_error}` : `${a.name} · A2A ${a.url}`;
+    chip.title = a.last_error ? `${a.name} (A2A ${a.url}): ${a.last_error}`
+      : a.online == null ? `${a.name} · A2A ${a.url} · ainda não recebeu nenhum evento que lhe diga respeito`
+      : `${a.name} · A2A ${a.url}`;
     return chip;
   }));
 }
@@ -516,7 +539,10 @@ function valueRows(d) {
   const yes = (b, s, n) => (b == null ? "—" : b ? s : n);
   if ("temperature_c" in v) rows.push(["Temperatura", v.temperature_c == null ? "—" : `${nf1.format(v.temperature_c)} °C`]);
   if ("humidity_pct" in v) rows.push(["Humidade", v.humidity_pct == null ? "—" : `${nf0.format(v.humidity_pct)} %`]);
-  if ("open" in v) rows.push(["Janela", yes(v.open, "Aberta", "Fechada")]);
+  if ("open" in v) {
+    const op = d.opening && world && world.openings[d.opening];
+    rows.push([op && op.type === "door" ? "Porta" : "Janela", yes(v.open, "Aberta", "Fechada")]);
+  }
   if ("on" in v) rows.push(["Estado", yes(v.on, "Ligada", "Desligada")]);
   if ("power_w" in v) rows.push(["Potência", v.power_w == null ? "—" : `${nf0.format(v.power_w)} W`]);
   if ("today_kwh" in v && v.today_kwh != null) rows.push(["Consumo hoje", `${nf1.format(v.today_kwh)} kWh`]);
@@ -568,22 +594,65 @@ async function renderChart(d) {
   if (rows.length < 2) { wrap.append(el("div", "sub", "Ainda sem histórico suficiente.")); box.replaceChildren(wrap); return; }
   const xs = rows.map((r) => r.ts), ys = rows.map((r) => r.value);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const W = 300, H = 70, pad = 6;
+  const W = 300, H = 84, pad = 6;
   const px = (x) => pad + ((x - x0) / Math.max(x1 - x0, 1)) * (W - 2 * pad);
-  const py = (y) => H - pad - ((y - y0) / Math.max(y1 - y0, 1e-9)) * (H - 2 * pad);
+  const py = (y) => (y1 === y0 ? H / 2 : H - pad - ((y - y0) / (y1 - y0)) * (H - 2 * pad));
   const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.setAttribute("preserveAspectRatio", "none");
-  const line = document.createElementNS(NS, "polyline");
-  line.setAttribute("points", rows.map((r) => `${px(r.ts).toFixed(1)},${(y1 === y0 ? H / 2 : py(r.value)).toFixed(1)}`).join(" "));
-  line.setAttribute("fill", "none");
-  line.setAttribute("stroke", "#6aa8ff");
-  line.setAttribute("stroke-width", "2");
-  line.setAttribute("vector-effect", "non-scaling-stroke");
-  svg.append(line);
-  const fmt = (y) => (unit ? `${metric === "power_w" ? nf0.format(y) : nf1.format(y)} ${unit}` : y >= 0.5 ? "1" : "0");
-  wrap.append(svg, el("div", "eixo", el("span", null, `${hhmm(x0)} · mín ${fmt(y0)}`), el("span", null, `máx ${fmt(y1)} · ${hhmm(x1)}`)));
+  const svgEl = (tag, attrs) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const SERIES = "#3987e5";
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
+    "aria-label": `${TYPE_PT[d.role] || d.type}: histórico das últimas 6 horas` });
+  for (const y of [pad, H / 2, H - pad]) {  // faint grid
+    svg.append(svgEl("line", { x1: 0, x2: W, y1: y, y2: y, stroke: "rgba(133,145,166,.16)", "vector-effect": "non-scaling-stroke" }));
+  }
+  // contact / light are on-off: a step line; temperature / power: straight segments
+  const step = !unit;
+  const pts = [];
+  rows.forEach((r, i) => {
+    if (step && i) pts.push([px(r.ts), py(rows[i - 1].value)]);
+    pts.push([px(r.ts), py(r.value)]);
+  });
+  const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  svg.append(svgEl("polygon", { points: `${pad},${H} ${line} ${px(x1).toFixed(1)},${H}`, fill: SERIES, "fill-opacity": "0.14" }));
+  svg.append(svgEl("polyline", { points: line, fill: "none", stroke: SERIES, "stroke-width": "2",
+    "stroke-linejoin": "round", "vector-effect": "non-scaling-stroke" }));
+  const cross = svgEl("line", { y1: 0, y2: H, stroke: "rgba(230,235,243,.4)", "vector-effect": "non-scaling-stroke", visibility: "hidden" });
+  svg.append(cross);
+  const fmt = (y) => (unit ? `${metric === "power_w" ? nf0.format(y) : nf1.format(y)} ${unit}`
+    : metric === "open" ? (y >= 0.5 ? "aberta" : "fechada") : (y >= 0.5 ? "ligada" : "desligada"));
+  const last = rows[rows.length - 1];
+  // endpoint: HTML dot over the SVG (the SVG is stretched, a circle in it would be an ellipse)
+  const dot = el("span", null);
+  dot.style.cssText = `position:absolute;width:8px;height:8px;border-radius:50%;background:${SERIES};`
+    + `box-shadow:0 0 0 2px var(--panel-2);transform:translate(-50%,-50%);pointer-events:none`;
+  const tip = el("div", "dica");
+  tip.hidden = true;
+  const plot = el("div", null);
+  plot.style.position = "relative";
+  plot.append(svg, dot, tip);
+  const place = () => {
+    const r = svg.getBoundingClientRect();
+    dot.style.left = `${(px(last.ts) / W) * r.width}px`;
+    dot.style.top = `${(py(last.value) / H) * r.height}px`;
+  };
+  requestAnimationFrame(place);
+  svg.addEventListener("pointermove", (e) => {
+    const r = svg.getBoundingClientRect();
+    const t = x0 + ((e.clientX - r.left) / r.width * W - pad) / (W - 2 * pad) * (x1 - x0);
+    const near = rows.reduce((a, b) => (Math.abs(b.ts - t) < Math.abs(a.ts - t) ? b : a));
+    const x = px(near.ts);
+    cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("visibility", "visible");
+    tip.hidden = false;
+    tip.textContent = `${hhmm(near.ts)} · ${fmt(near.value)}`;
+    tip.style.left = `${Math.min(Math.max((x / W) * r.width, 50), r.width - 50)}px`;
+    tip.style.top = "-26px";
+  });
+  svg.addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+  wrap.append(plot, el("div", "eixo", el("span", null, `${hhmm(x0)} · mín ${fmt(y0)}`), el("span", null, `máx ${fmt(y1)} · agora ${fmt(last.value)}`)));
   box.replaceChildren(wrap);
 }
 
@@ -624,15 +693,81 @@ function renderActions(d) {
   box.append(note);
 }
 
+// camera: live feed (MJPEG from the RTSP stream) + "Analisar agora" with the vision model (qwen3.8)
+const CATEGORY_PT = { empty: "sem pessoas", person: "pessoa", intrusion: "possível intrusão", smoke: "fumo", unclear: "pouco claro" };
+async function renderCamera(d) {
+  const box = $("painel-camara");
+  box.replaceChildren();  // also drops the <img>, which closes the MJPEG connection
+  if (d?.role !== "camera") return;
+  let status = null;
+  try { status = await (await fetch("/vision/live/status")).json(); } catch { /* API down */ }
+  if (selected !== d.id) return;
+  const feed = el("div", "camara-feed");
+  if (status?.live) {
+    const img = document.createElement("img");
+    img.alt = "Imagem em direto da câmara";
+    const off = el("div", "sem-sinal", "A ligar à câmara…");
+    const connect = () => { img.src = `/vision/live.mjpg?t=${Date.now()}`; };
+    img.addEventListener("load", () => off.remove());
+    // the stream ends when the camera stops sending: show the server's reason and reconnect in 5 s
+    img.addEventListener("error", async () => {
+      if (!img.isConnected) return;  // panel closed or another device selected
+      let why = "";
+      try { why = (await (await fetch("/vision/live/status")).json()).error; } catch { /* API down */ }
+      off.textContent = `${why || "Sem imagem da câmara."} A tentar de novo…`;
+      if (!off.isConnected) feed.append(off);
+      setTimeout(() => { if (img.isConnected) connect(); }, 5000);
+    });
+    connect();
+    feed.append(img, el("span", "ao-vivo", "● ao vivo"), off);
+  } else {
+    feed.append(el("div", "sem-sinal", status?.vision === false ? "Visão desligada (VISION_ENABLED=false)."
+      : "Sem câmara em direto: define CAMERA_RTSP_URL no .env."));
+  }
+  const result = el("div", null);
+  const btn = el("button", null, "Analisar agora");
+  btn.type = "button";
+  btn.disabled = !status?.vision;
+  const note = el("span", "sub", status?.model ? `modelo: ${status.model}` : "");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    note.textContent = "A analisar a imagem…";
+    try {
+      const res = await fetch("/vision/analyze", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ divisao: d.room_name || null, contexto: "general" }) });
+      const o = await res.json();
+      if (!res.ok) throw new Error(o.detail || res.statusText);
+      const box2 = el("div", "camara-analise");
+      if (o.status !== "ok") box2.append(el("div", null, `Não consegui analisar (${o.status}): ${o.error || ""}`));
+      else {
+        box2.append(el("div", null, o.scene_note_pt || "Sem descrição."));
+        const bits = [`${o.person_count} ${o.person_count === 1 ? "pessoa" : "pessoas"}`, CATEGORY_PT[o.category] || o.category];
+        if (o.window_or_door_open != null) bits.push(`janela/porta ${o.window_or_door_open ? "aberta" : "fechada"}`);
+        if (o.smoke_or_fire_visible) bits.push("fumo/fogo visível");
+        bits.push(`confiança ${Math.round((o.overall_confidence || 0) * 100)} %`, `${(o.latency_ms / 1000).toFixed(1)} s`);
+        box2.append(el("div", "meta", bits.join(" · ")));
+      }
+      result.replaceChildren(box2);
+      note.textContent = o.model ? `modelo: ${o.model}` : "";
+    } catch (err) {
+      note.textContent = `Erro: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  box.append(feed, el("div", "camara-acoes", btn, note), result);
+}
+
 function openPanel(id) {
   selected = id;
   renderPanel();
   const d = current.devices.find((x) => x.id === id);
   renderActions(d);
   renderChart(d);
+  renderCamera(d);
   window.dispatchEvent(new CustomEvent("twin:device-selected", { detail: d }));
 }
-function closePanel() { selected = null; $("painel").hidden = true; }
+function closePanel() { selected = null; $("painel").hidden = true; $("painel-camara").replaceChildren(); }
 $("painel-fechar").addEventListener("click", closePanel);
 
 // ------------------------------------------------------------------ picking
@@ -776,6 +911,41 @@ window.addEventListener("tt:layout-changed", () => setTimeout(poll, 300));
 // ------------------------------------------------------------------ timeline + balloons
 const seen = new Set();
 const balloons = [];
+// filter chips: one per area, in a fixed order (identity colour never follows rank)
+const FILTERS = ["Todos", "Segurança", "Energia", "Conforto", "Coordenador"];
+let filter = "Todos";
+try { filter = localStorage.getItem("tt-linha-filtro") || "Todos"; } catch { /* storage blocked */ }
+if (!FILTERS.includes(filter)) filter = "Todos";
+function areaOf(it) {
+  return it.kind === "decision" ? (AREA_VAR[it.agent] ? it.agent : it.area) : it.area;
+}
+function applyFilter(li) {
+  li.hidden = filter !== "Todos" && li.dataset.area !== filter
+    && !(filter === "Segurança" && li.dataset.area === "Emergência");
+}
+function renderFilters() {
+  $("linha-filtros").replaceChildren(...FILTERS.map((name) => {
+    const b = el("button", null);
+    b.type = "button";
+    if (name !== "Todos") {
+      const id = el("span", "id");
+      if (name === "Coordenador") id.style.transform = "rotate(45deg) scale(.9)";
+      b.append(id);
+      b.style.setProperty("--area", areaColor(name));
+    }
+    b.append(name);
+    b.setAttribute("aria-pressed", String(name === filter));
+    b.addEventListener("click", () => {
+      filter = name;
+      try { localStorage.setItem("tt-linha-filtro", name); } catch { /* storage blocked */ }
+      renderFilters();
+      $("linha-lista").querySelectorAll("li:not(.vazio)").forEach(applyFilter);
+    });
+    return b;
+  }));
+}
+renderFilters();
+
 function addTimeline(items, { animate }) {
   const list = $("linha-lista");
   list.querySelector(".vazio")?.remove();
@@ -783,11 +953,19 @@ function addTimeline(items, { animate }) {
     if (seen.has(it.id)) continue;
     seen.add(it.id);
     const decision = it.kind === "decision";
-    const li = el("li", (animate ? "novo " : "") + (it.severity === "critical" ? "critical" : ""));
-    li.style.setProperty("--area", areaColor(it.area));
-    const meta = el("div", "meta", el("span", null, hhmmss(it.ts)), el("span", "area", decision ? it.agent : it.area),
-      it.room_name ? el("span", null, `· ${it.room_name}`) : null, decision ? el("span", "estado", it.status) : null);
+    const area = areaOf(it);
+    const cls = [animate ? "novo" : "", it.severity === "critical" ? "critical" : "", decision ? "decisao" : "",
+      area === "Coordenador" ? "coordenador" : ""].filter(Boolean).join(" ");
+    const li = el("li", cls);
+    li.dataset.area = area;
+    li.style.setProperty("--area", areaColor(area));
+    const time = el("time", null, hhmmss(it.ts));
+    time.dateTime = new Date(it.ts * 1000).toISOString();
+    const meta = el("div", "meta", time, el("span", "area", decision ? it.agent : it.area),
+      it.room_name ? el("span", null, `· ${it.room_name}`) : null,
+      decision ? el("span", `estado ${it.status}`, it.status) : null);
     li.append(meta, el("div", null, it.message));
+    applyFilter(li);
     list.prepend(li);
     if (animate && (decision || !QUIET.has(it.type))) showBalloon(it);
   }
@@ -809,7 +987,7 @@ function showBalloon(it) {
   const decision = it.kind === "decision";
   const inner = el("div", null, el("b", null, `${decision ? it.agent : it.area}: `), it.message);
   const outer = el("div", "balao", inner);
-  outer.style.setProperty("--area", areaColor(it.area));
+  outer.style.setProperty("--area", areaColor(areaOf(it)));
   const obj = new CSS2DObject(outer);
   obj.position.copy(pos);
   scene.add(obj);
@@ -899,7 +1077,7 @@ function animate() {
     for (const op of Object.values(world.openings)) op.pivot.rotation.y += (op.target - op.pivot.rotation.y) * Math.min(1, dt * 5);
     const alarm = current.alarm.any;
     const pulse = 0.5 + 0.5 * Math.sin(t * 6);
-    world.edgeMat.color.set(alarm ? 0xff3b3b : 0x8592aa);
+    world.edgeMat.color.set(alarm ? 0xff4a4a : 0x8591a6);
     world.edgeMat.opacity = alarm ? 0.45 + 0.55 * pulse : 0.55;
     for (const wr of Object.values(world.rooms)) {
       if (!wr.smoke) continue;
@@ -923,7 +1101,7 @@ function animate() {
       }
       if (wd.ledMat && wd.alarm) wd.ledMat.color.set(pulse > 0.5 ? 0xff2a2a : 0x330000);
       if (wd.coneMat) {
-        wd.coneMat.color.set(wd.active ? 0xffa640 : 0x6aa8ff);
+        wd.coneMat.color.set(wd.active ? 0xfab219 : 0x8fb4e8);
         wd.coneMat.opacity = wd.data.online ? (wd.active ? 0.16 + 0.12 * pulse : 0.08) : 0.03;
       }
     }

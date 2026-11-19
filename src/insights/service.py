@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 REJECT_COOLDOWN_S = 7 * 86400
 BANNED = re.compile(r"\b(sempre|todas as noites|todos os dias|todas as manh[ãa]s|constantemente|nunca)\b", re.I)
 METRIC_PT = {"humidity": ("Humidade", "%"), "temperature": ("Temperatura", "°C"), "power_w": ("Potência", "W"),
-             "on": ("Ligado", ""), "open": ("Janela aberta", "")}
+             "on": ("Ligado", ""), "open": ("Aberta (janela/porta)", "")}
 
 
 class Phrase(BaseModel):

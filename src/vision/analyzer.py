@@ -320,7 +320,7 @@ def make_analyzer(settings: Settings) -> VisionAnalyzer:
         model_name=settings.vision_model,
         api_key=settings.vision_api_key,
         timeout_s=settings.vision_timeout_s,
-        reasoning_effort=settings.llm_reasoning_effort,
+        reasoning_effort=settings.vision_reasoning_effort,
         keep_alive=settings.vision_keep_alive,
     )
 

@@ -41,9 +41,10 @@ def make_chat_client(settings: Settings):
 
 
 def chat_options(settings: Settings | None) -> dict:
-    """Options sent with every chat call. reasoning_effort="none" turns off the model's thinking:
-    with qwen3.8 on the team server, about 1 s instead of 8-10 s per answer, same proposals."""
-    opts = {"temperature": 0.2, "max_tokens": 900}
+    """Options sent with every chat call. The agents always think (LLM_REASONING_EFFORT, default "high"):
+    slower (tens of seconds with qwen3.8), but the proposals are what the Coordinator acts on. The thinking
+    counts towards max_tokens, so it has room for it."""
+    opts = {"temperature": 0.2, "max_tokens": 16000}
     if settings is not None and settings.llm_reasoning_effort:
         opts["reasoning_effort"] = settings.llm_reasoning_effort
     return opts

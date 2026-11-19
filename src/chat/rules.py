@@ -49,24 +49,31 @@ def _cap(type_: str, op: str, value) -> dict:
     return {"name": "", "type": type_, "operator": op, "value": value}
 
 
-def build_rule(req: RuleRequest, state: HomeState, existing_names: set[str]) -> tuple[dict, str]:
+def build_rule(req: RuleRequest, state: HomeState, existing_names: set[str],
+               setpoint=None) -> tuple[dict, str]:
+    """setpoint(room_id) -> °C resolves the value "alvo" ("quando a temperatura estiver boa")."""
     triggers, conds_pt, slug = [], [], []
     for c in req.condicoes:
         val = norm(str(c.valor)) if c.valor is not None else ""
         if c.sensor == "janela":
             d = _device(state, "contact", c.divisao)
             if d is None:
-                raise RuleProblem("Não há nenhum sensor de janela na casa.")
+                raise RuleProblem("Não há nenhum sensor de contacto (janela ou porta) na casa.")
             opened = not val.startswith("fech")
             triggers.append({"type": "device", "device": {"name": "", "id": d.id},
                              "capabilities": [_cap("sensorState", "=", "alarm" if opened else "normal")]})
-            conds_pt.append(f"a janela {de(d.room_name)} {'abrir' if opened else 'fechar'}")
-            slug.append("janela_" + ("aberta" if opened else "fechada"))
+            noun = d.opening_noun  # porta | janela: what the sensor watches in the 3D
+            conds_pt.append(f"a {noun} {de(d.room_name)} {'abrir' if opened else 'fechar'}")
+            slug.append(f"{noun}_" + ("aberta" if opened else "fechada"))
         elif c.sensor in ("temperatura", "humidade"):
             d = _device(state, "temperature", c.divisao)
             if d is None:
                 raise RuleProblem("Não há nenhum sensor de temperatura na casa.")
             num = _num(c.valor)
+            alvo = num is None and c.sensor == "temperatura" and norm(str(c.valor or "")) == "alvo"
+            if alvo:
+                room = state.rooms.get(d.room_id)
+                num = (setpoint(d.room_id) if setpoint else None) or (room.setpoint_c if room else None)
             if num is None:
                 raise RuleProblem(f"Falta o valor de {c.sensor} para a regra.")
             op = c.operador if c.operador in (">", "<") else ">"
@@ -74,7 +81,7 @@ def build_rule(req: RuleRequest, state: HomeState, existing_names: set[str]) -> 
             unit = "°C" if c.sensor == "temperatura" else "%"
             triggers.append({"type": "device", "device": {"name": "", "id": d.id}, "capabilities": [_cap(cap, op, num)]})
             conds_pt.append(f"a {c.sensor} {em(d.room_name)} {'passar' if op == '>' else 'descer abaixo'} de "
-                            f"{num:g} {unit}".replace("descer abaixo de", "descer abaixo de"))
+                            f"{num:g} {unit}" + (" (a tua temperatura alvo)" if alvo else ""))
             slug.append(f"{c.sensor[:4]}_{'acima' if op == '>' else 'abaixo'}_{num:g}".replace(".", "_"))
         elif c.sensor in ("aquecedor", "luz"):
             d = _device(state, "plug" if c.sensor == "aquecedor" else "light", c.divisao)

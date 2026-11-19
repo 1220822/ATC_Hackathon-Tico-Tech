@@ -1,4 +1,4 @@
-"""State of the digital twin: layout + normalised device values + security + events/decisions.
+"""State of the 3D view: layout + normalised device values + security + events/decisions.
 
 Built only from SharedMemory (the perception loop's latest HomeState, events and decisions), so
 the 3D view never polls the MCP itself. Served by GET /twin/state and pushed by GET /twin/stream
@@ -82,7 +82,7 @@ def device_values(d: DeviceState, alarm: dict, now: float, camera_active_s: floa
     elif d.role == "smoke":
         v.update(alarm=alarm["smoke"] and alarm["smoke_device_id"] in (d.id, None))
     elif d.role == "hub":
-        v.update(alarm=c.get("alarmState") == "alarm", tamper=c.get("tamperState") == "alarm",
+        v.update(alarm=c.get("alarmState") == "alarm" and alarm["hub"], tamper=c.get("tamperState") == "alarm",
                  charging=c.get("chargeState"), network=c.get("networkMode"))
     elif d.role == "camera":
         v.update(motion=_recent_flag(c.get("motionDetected"), now, camera_active_s),
@@ -112,6 +112,9 @@ def twin_state(memory: SharedMemory, settings: Settings, n: int = 30, now: float
     layout = load_layout(active_layout_file(settings))
     placed = resolve_layout(layout, state)
     alarm = active_alarm(state, settings, now)
+    if memory.alarm_silenced(state):  # the user disarmed it: over, even if the hub still says isAlarmed
+        alarm = {**alarm, "any": False, "smoke": False, "intrusion": False, "hub": False,
+                 "smoke_device_id": None, "smoke_room": None}
     devices = []
     for dev_id, p in placed["devices"].items():
         d = state.devices[dev_id]
@@ -119,6 +122,7 @@ def twin_state(memory: SharedMemory, settings: Settings, n: int = 30, now: float
             "id": d.id, "name": d.name, "type": d.type, "role": d.role, "room": d.room_id,
             "room_name": d.room_name, "online": d.online, "last_seen": d.last_seen,
             **{k: p[k] for k in ("position", "rotation_y", "mount", "opening", "target", "placed")},
+            **({"view_radius": p["view_radius"]} if "view_radius" in p else {}),
             "values": device_values(d, alarm, now, layout.display.camera_active_s),
         })
     rooms = []
@@ -131,7 +135,7 @@ def twin_state(memory: SharedMemory, settings: Settings, n: int = 30, now: float
         "dry_run": settings.dry_run,
         "actions": {role: list(caps["power"]) for role, caps in UI_ACTIONS.items()},  # what the UI may request
         "security": {"status": state.security_status, "label": _mode_pt(state.security_status),
-                     "armed": state.armed, "is_alarmed": state.is_alarmed},
+                     "armed": state.armed, "is_alarmed": state.is_alarmed and not memory.alarm_silenced(state)},
         "alarm": alarm,
         "display": layout.display.model_dump(),
         "rooms": rooms, "devices": devices, "warnings": placed["warnings"],

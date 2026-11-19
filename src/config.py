@@ -58,15 +58,16 @@ class Settings(BaseModel):
     history_db: Path
     legacy_history_db: Path  # old var/history.db, imported once into history_db
     store_interval_s: float
-    # 3D digital twin: where rooms and devices are drawn (versioned)
+    # the house in 3D: where rooms and devices are drawn (versioned)
     layout_file: Path
     # LLM (OpenAI-compatible endpoint) and the A2A agents
     llm_base_url: str
     llm_model: str
     llm_api_key: str  # local servers ignore it, but the OpenAI client wants one
-    llm_reasoning_effort: str  # "none" (fast, default) | "low" | "medium" | "high" | "" = not sent
+    llm_reasoning_effort: str  # the Coordinator (chat + agents) always thinks: "high" (default) | "medium" | "low" | "none" | "" = not sent
     chat_llm: bool  # the chat classifies messages with the LLM (false = PT-PT rules only)
     chat_timeout_s: float
+    chat_reasoning_effort: str  # every chat message is read by the LLM thinking it over (default "high"); "" = fast reading only
     insight_min_days: int  # a pattern must be seen on at least this many days (demo: 2)
     insight_max_per_day: int
     insight_every_s: float
@@ -83,6 +84,7 @@ class Settings(BaseModel):
     vision_model: str
     vision_api_key: str
     vision_timeout_s: float
+    vision_reasoning_effort: str  # the camera model: "none" (fast, default); not the Coordinator
     vision_keep_alive: str  # Ollama keep_alive sent during startup warmup (e.g. "30m", "-1"); "" disables
     vision_warmup: bool  # best-effort non-blocking Ollama warmup on API startup
     vision_cooldown_s: float
@@ -129,16 +131,17 @@ def get_settings() -> Settings:
         llm_base_url=llm_base_url,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
-        llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT", "none").strip(),
+        llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT", "high").strip(),
         chat_llm=_bool("CHAT_LLM", True),
-        chat_timeout_s=_float("CHAT_TIMEOUT_S", 30.0),
+        chat_timeout_s=_float("CHAT_TIMEOUT_S", 600.0),
+        chat_reasoning_effort=os.environ.get("CHAT_REASONING_EFFORT", "high").strip(),
         insight_min_days=int(_float("INSIGHT_MIN_DAYS", 2)),
         insight_max_per_day=int(_float("INSIGHT_MAX_PER_DAY", 2)),
         insight_every_s=_float("INSIGHT_EVERY_S", 1800),
         agents_enabled=_bool("AGENTS", True),
         agents_host=os.environ.get("AGENTS_HOST") or "127.0.0.1",
         agents_base_port=int(_float("AGENTS_BASE_PORT", 9100)),
-        agent_timeout_s=_float("AGENT_TIMEOUT_S", 120.0),
+        agent_timeout_s=_float("AGENT_TIMEOUT_S", 600.0),
         agent_cooldown_s=_float("AGENT_COOLDOWN_S", 60.0),
         api_url=(os.environ.get("API_URL") or "http://127.0.0.1:8000").rstrip("/"),
         vision_enabled=_bool("VISION_ENABLED", True),
@@ -147,6 +150,7 @@ def get_settings() -> Settings:
         vision_model=(os.environ.get("VISION_MODEL") or "").strip() or llm_model,
         vision_api_key=(os.environ.get("VISION_API_KEY") or "").strip() or llm_api_key,
         vision_timeout_s=_float("VISION_TIMEOUT_S", 45.0),
+        vision_reasoning_effort=os.environ.get("VISION_REASONING_EFFORT", "none").strip(),
         vision_keep_alive=os.environ.get("VISION_KEEP_ALIVE", "30m").strip(),
         vision_warmup=_bool("VISION_WARMUP", True),
         vision_cooldown_s=_float("VISION_COOLDOWN_S", 10.0),

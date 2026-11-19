@@ -221,3 +221,80 @@ class TestPendingAndLearning(ChatCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPresenceAndCommands(ChatCase):
+    """"Está alguém na sala?" looks through the camera; "desliga o aquecedor" is a command even if the LLM
+    reads it as an answer to a proposal."""
+
+    class FakeVision:
+        def __init__(self, people=1, status="ok"):
+            self.people, self.status, self.calls = people, status, []
+
+        def analyze_now(self, room=None, context="general"):
+            from src.vision.models import VisionObservation
+            self.calls.append(room)
+            return VisionObservation(status=self.status, has_person=self.people > 0, person_count=self.people,
+                                     category="person" if self.people else "empty", overall_confidence=0.9,
+                                     scene_note_pt="Uma pessoa junto à mesa.", frame_path="f.jpg")
+
+    def test_presence_question_uses_the_camera(self):
+        self.chat.vision = self.FakeVision(people=1)
+        msgs = self.chat.handle("Está alguém na sala?")
+        self.assertTrue(self.last(msgs).startswith("Sim, vejo 1 pessoa na Sala"), self.last(msgs))
+        self.assertEqual(msgs[-1]["image"], "/vision/frames/f.jpg")
+        self.chat.vision = self.FakeVision(people=0)
+        self.assertTrue(self.last(self.chat.handle("Vê na câmara se está alguém na sala")).startswith(
+            "Não vejo ninguém na Sala"))
+
+    def test_presence_in_a_room_without_camera(self):
+        self.chat.vision = self.FakeVision()
+        self.assertIn("Não há câmara no Quarto", self.last(self.chat.handle("Está alguém no quarto?")))
+        self.assertEqual(self.chat.vision.calls, [])
+
+    def test_camera_failure_is_said(self):
+        self.chat.vision = self.FakeVision(status="capture_error")
+        self.assertIn("não consegui obter a imagem", self.last(self.chat.handle("Está alguém na sala?")))
+
+    def test_command_wins_over_a_wrong_llm_reading(self):
+        llm = LLM(complete=lambda m, s: '{"intent": "responder_proposta", "resposta": "aprovar"}')
+        got = classify("desliga o aquecedor", llm, ROOMS)
+        self.assertEqual(got.intent, "comando_dispositivo")
+        got = classify("Vê na câmara se está alguém na sala", LLM(complete=lambda m, s: '{"intent": "outro"}'), ROOMS)
+        self.assertEqual((got.intent, got.topico), ("pergunta_estado", "presenca"))
+
+
+class TestSeveralRequestsAndThinking(ChatCase):
+    def test_arm_away_and_heater_in_one_message(self):
+        msgs = self.chat.handle("Vou sair, arma a casa e liga o aquecedor para a casa ficar quentinha")
+        texts = [m["text"] for m in msgs if m["role"] == "coordenador"]
+        self.assertIn("ligar a tomada do Quarto", texts[0])  # the heater at once
+        self.assertIn("modo ausente", texts[-1])  # "vou sair" -> away, waits for confirmation
+        self.assertIn("Confirmas?", texts[-1])
+
+    def test_queue_goes_on_after_the_confirmation(self):
+        msgs = self.chat.handle("arma a casa e quero o quarto a 21 °C de manhã")
+        self.assertIn("armar a casa", self.last(msgs))
+        out = self.chat.action("confirm", id=msgs[-1]["confirm_id"])
+        self.assertIn("Segurança", out[1]["text"])
+        self.assertIn("Confirmas?", out[-1]["text"])  # then the next request of the same message
+
+    def test_temperature_good_uses_the_target(self):
+        self.mem.prefs.set(f"room:{QUARTO}", "setpoint_c", {"c": 22.5}, "explicit", "quero 22,5")
+        msgs = self.chat.handle("quando vires que a temperatura, está boa desliga")
+        self.assertIn("passar de 22.5 °C (a tua temperatura alvo)", self.last(msgs))
+        self.assertIn("desligo o aquecedor", self.last(msgs))
+
+    def test_not_understood_thinks_it_over(self):
+        calls = []
+
+        def fake(messages, schema):
+            calls.append(schema.get("title"))
+            if schema.get("title") == "ChatPlan":
+                return json.dumps({"pedidos": [{"intent": "comando_dispositivo",
+                                                "comando": {"dispositivo": "luz", "acao": "ligar"}}]})
+            return '{"intent": "outro"}'
+        self.chat.llm = LLM(complete=fake)
+        msgs = self.chat.handle("faz qualquer coisa, que a sala está um breu")
+        self.assertIn("ChatPlan", calls)
+        self.assertIn("ligar a luz", self.last(msgs))

@@ -1,4 +1,4 @@
-"""3D layout of the house for the digital twin: config/layout.json (versioned), validated here.
+"""3D layout of the house: config/layout.json (versioned), validated here.
 
 Coordinates in metres. x to the right, y up, z towards the viewer. Each room is a box whose
 corner (x, z) is its minimum corner; device positions are RELATIVE to that corner, so moving a
@@ -16,6 +16,7 @@ things are; WHAT exists always comes from get_home:
 
 import json
 import logging
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -156,6 +157,28 @@ def load_layout(path: Path | str | None) -> Layout:
     return _load(str(p), p.stat().st_mtime)
 
 
+def user_layout_file(settings) -> Path:
+    """Layout edited by the user (chat / Ajustar 3D); overrides config/layout.json when it exists."""
+    return Path(settings.history_db).parent / "layout_user.json"
+
+
+def active_layout_file(settings) -> Path:
+    user = user_layout_file(settings)
+    return user if user.exists() else Path(settings.layout_file)
+
+
+def contact_openings(settings) -> dict[str, Literal["door", "window"]]:
+    """Contact sensor id -> kind of opening it watches (door / window), from the active layout.
+    Sensors not in the layout (or not attached to an opening) are absent: callers default to window."""
+    try:
+        layout = load_layout(active_layout_file(settings))
+    except LayoutError as e:
+        log.warning("%s", e)
+        return {}
+    kinds = {o.id: o.type for r in layout.rooms.values() for w in r.walls for o in w.openings}
+    return {dev_id: kinds[d.opening] for dev_id, d in layout.devices.items() if d.opening in kinds}
+
+
 # ------------------------------------------------------------ automatic layout
 
 def _slug(text: str) -> str:
@@ -200,8 +223,9 @@ def auto_room(room: dict, x: float, z: float = 0.0) -> tuple[RoomLayout, dict[st
         elif t == "gateway":
             spec = {"position": (w - 0.4 - shift, 0.9, 0.1), "mount": "wall"}
         elif t == "camera":
-            spec = {"position": (0.25 + shift, h - 0.25, 0.25), "rotation_y": 45, "mount": "corner",
-                    "target": (door.offset, 1.0, d)}
+            pos = (0.25 + shift, h - 0.25, 0.25)
+            target, rot, _ = camera_view({"width": w, "depth": d}, pos)
+            spec = {"position": pos, "rotation_y": rot, "mount": "corner", "target": target}
         else:
             spec = {"position": (w / 2 + shift, 1.0, d / 2), "mount": "floor"}
         placed[dv["id"]] = DeviceLayout(**common, **spec)
@@ -255,6 +279,18 @@ def _warn(key: str, msg: str, warnings: list[str]) -> None:
         log.warning(msg)
 
 
+def camera_view(room: dict, position, rotation_y: float = 0.0) -> tuple[Vec3, float, float]:
+    """A camera covers its whole room: it looks at the centre of the floor, turned towards it, with a
+    view cone wide enough to reach the farthest corner. Returns (target, rotation_y, view_radius),
+    relative to the room corner like the layout."""
+    w, dpt = room["width"], room["depth"]
+    target = (round(w / 2, 3), 0.0, round(dpt / 2, 3))
+    dx, dz = target[0] - position[0], target[2] - position[2]
+    rot = round(math.degrees(math.atan2(dx, dz)), 1) if abs(dx) + abs(dz) > 0.05 else rotation_y
+    radius = max(math.hypot(cx - target[0], cz - target[2]) for cx in (0.0, w) for cz in (0.0, dpt))
+    return target, rot, round(radius, 3)
+
+
 def resolve_layout(layout: Layout, state) -> dict:
     """Absolute 3D placement of every MCP room and device in `state` (HomeState).
     Rooms marked simulated (config/home.json) are not part of the twin."""
@@ -301,9 +337,14 @@ def resolve_layout(layout: Layout, state) -> dict:
             rel, rot, mount, opening, target = dl.position, dl.rotation_y, dl.mount, dl.opening, dl.target
             placed = "layout"
 
+        view_radius = None
+        if d.role == "camera":  # always looks at the whole room, wherever it is (layout file, chat or drag)
+            target, rot, view_radius = camera_view(room, rel, rot)
+
         def absolute(p):
             return None if p is None else [round(room["x"] + p[0], 3), round(p[1], 3), round(room["z"] + p[2], 3)]
 
         devices[d.id] = {"id": d.id, "room": d.room_id, "position": absolute(rel), "rotation_y": rot,
-                         "mount": mount, "opening": opening, "target": absolute(target), "placed": placed}
+                         "mount": mount, "opening": opening, "target": absolute(target), "placed": placed,
+                         **({"view_radius": view_radius} if view_radius is not None else {})}
     return {"rooms": list(rooms.values()), "devices": devices, "warnings": warnings}

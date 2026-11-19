@@ -13,7 +13,7 @@ Antes de escrever qualquer linha de código, lê integralmente [docs/vision_arch
 
 ### 0.1 Contexto Essencial do Sistema (Resumo Operacional)
 
-- **Stack do repositório:** Python 3.11 (`.venv\Scripts\python.exe`), Pydantic v2, FastAPI, Uvicorn, Microsoft Agent Framework + A2A (`src/agents/`), Gémeo Digital 3D em Three.js com SSE (`src/twin/`).
+- **Stack do repositório:** Python 3.11 (`.venv\Scripts\python.exe`), Pydantic v2, FastAPI, Uvicorn, Microsoft Agent Framework + A2A (`src/agents/`), casa em 3D em Three.js com SSE (`src/twin/`).
 - **Topologia real da casa ("Hack 7", [docs/capabilities/get_home_rooms.json](capabilities/get_home_rooms.json) & [config/home.json](../config/home.json)):**
   - `Sala` (MCP real): `Camera`, `Security hub`, `Contact sensor`, `Smoke sensor` *(única divisão com câmara)*.
   - `Quarto` (MCP real): `Light`, `Plug`, `Temperature sensor`.

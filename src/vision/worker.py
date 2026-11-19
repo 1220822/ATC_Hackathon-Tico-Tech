@@ -126,6 +126,9 @@ class VisionWorker:
             self._stop.clear()
             self._thread = threading.Thread(target=self._run, name="vision-worker", daemon=True)
             self._thread.start()
+        start_source = getattr(self._source, "start", None)
+        if callable(start_source):  # live RTSP: keep the stream open so captures are instant
+            start_source()
         log.info(
             "vision worker ativo (source=%s, model=%s)",
             self._source.name,
@@ -164,8 +167,24 @@ class VisionWorker:
         t.start()
         return t
 
+    def live_jpeg(self, wait_s: float = 0.0) -> bytes | None:
+        """Newest camera frame (JPEG) for the live view, or None if the source has no live feed."""
+        fn = getattr(self._source, "latest_jpeg", None)
+        return fn(wait_s) if callable(fn) else None
+
+    @property
+    def live_error(self) -> str:
+        return getattr(self._source, "error", "") or ""
+
+    @property
+    def has_live(self) -> bool:
+        return callable(getattr(self._source, "latest_jpeg", None))
+
     def stop(self, timeout_s: float = 5.0) -> None:
         self._stop.set()
+        stop_source = getattr(self._source, "stop", None)
+        if callable(stop_source):
+            stop_source()
         with self._cond:
             self._cond.notify_all()
         t = self._thread

@@ -1,5 +1,6 @@
 // "O que a casa sabe de ti": everything the house knows about the user, with edit / revoke / erase.
-// Opened by the chat header button (window event "tt:knowledge").
+// On top, a summary that is changed in place: the target temperature of each room and how much the
+// house may do on its own per area. Opened by the chat header button (window event "tt:knowledge").
 
 const $el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -17,11 +18,51 @@ async function api(path, body) {
   return data;
 }
 
+const nf = new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 });
+
 const EDIT_HINT = {
-  setpoint_c: "Nova temperatura em °C (ex.: 21):", comfort_range_c: "Novo intervalo em °C (ex.: 19-22):",
-  humidity_max_pct: "Nova humidade máxima em % (ex.: 65):", autonomy: "Nível: auto, perguntar ou nunca",
-  quiet_hours: "Horas sem sugestões (ex.: 23:00-07:30):", note: "Texto da nota:",
+  setpoint_c: "Temperatura em °C (ex.: 21)", comfort_range_c: "Intervalo em °C (ex.: 19-22)",
+  humidity_max_pct: "Humidade máxima em % (ex.: 65)", autonomy: "auto, perguntar ou nunca",
+  quiet_hours: "Horas sem sugestões (ex.: 23:00-07:30)", note: "Texto da nota",
 };
+
+const LEVELS = [["auto", "Faz sozinha"], ["perguntar", "Pergunta-me"], ["nunca", "Nunca"]];
+
+const ORIGEM_TEMP = { tua: "definida por ti", geral: "preferência geral da casa", casa: "valor da casa (não disseste nada)" };
+
+// Inline form: one field, Guardar / Cancelar; Enter saves, Escape cancels (and does not close the panel).
+function inlineForm({ value = "", placeholder, label, type = "text", attrs = {}, onSave, onCancel }) {
+  const form = $el("form", "kn-form");
+  const input = $el("input");
+  input.type = type;
+  input.value = value;
+  if (placeholder) input.placeholder = placeholder;
+  input.setAttribute("aria-label", label);
+  Object.entries(attrs).forEach(([k, v]) => input.setAttribute(k, v));
+  const guardar = $el("button", "primario", "Guardar");
+  guardar.type = "submit";
+  const cancelar = $el("button", null, "Cancelar");
+  cancelar.type = "button";
+  const erro = $el("div", "kn-erro");
+  erro.setAttribute("role", "alert");
+  form.append(input, guardar, cancelar, erro);
+  cancelar.addEventListener("click", onCancel);
+  input.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!input.value.trim()) { erro.textContent = "Escreve um valor."; input.focus(); return; }
+    guardar.disabled = true;
+    try {
+      await onSave(input.value.trim());
+    } catch (err) {
+      erro.textContent = err.message;
+      guardar.disabled = false;
+      input.focus();
+    }
+  });
+  setTimeout(() => { input.focus(); input.select(); });
+  return form;
+}
 
 function item(p, { onEdit, onRevoke, revokeLabel = "Revogar", extra } = {}) {
   const row = $el("div", `item${p.ativa ? "" : " inativo"}`);
@@ -33,7 +74,15 @@ function item(p, { onEdit, onRevoke, revokeLabel = "Revogar", extra } = {}) {
   row.appendChild(body);
   if (onEdit && p.editavel && p.ativa) {
     const b = $el("button", null, "Editar");
-    b.addEventListener("click", () => onEdit(p));
+    b.addEventListener("click", () => {
+      b.hidden = true;
+      const form = inlineForm({
+        placeholder: EDIT_HINT[p.tipo] || "Novo valor", label: `Novo valor: ${p.descricao}`,
+        onSave: (text) => onEdit(p, text),
+        onCancel: () => { form.remove(); b.hidden = false; b.focus(); },
+      });
+      body.appendChild(form);
+    });
     row.appendChild(b);
   }
   if (onRevoke && p.ativa) {
@@ -48,6 +97,63 @@ function section(corpo, title, rows, empty) {
   corpo.appendChild($el("h3", null, title));
   if (!rows.length) corpo.appendChild($el("div", "vazio", empty));
   rows.forEach((r) => corpo.appendChild(r));
+}
+
+function tempTile(t, refresh) {
+  const tile = $el("div", "kn-tile");
+  tile.appendChild($el("div", "kn-rotulo", t.divisao));
+  const valor = $el("div", "kn-valor", t.c == null ? "—" : `${nf.format(t.c)} °C`);
+  const origem = $el("div", "meta", ORIGEM_TEMP[t.origem] || "");
+  const mudar = $el("button", null, "Mudar");
+  mudar.setAttribute("aria-label", `Mudar a temperatura alvo ${t.divisao}`);
+  mudar.dataset.focus = `temp:${t.divisao_id}`;
+  tile.append(valor, origem);
+  if (t.frase && t.origem === "tua") tile.appendChild($el("div", "frase", `«${t.frase}»`));
+  tile.appendChild(mudar);
+  mudar.addEventListener("click", () => {
+    mudar.hidden = true;
+    const form = inlineForm({
+      value: t.c == null ? "" : String(t.c), label: `Temperatura alvo ${t.divisao} em °C`, type: "number",
+      attrs: { min: "10", max: "30", step: "0.5", inputmode: "decimal" },
+      onSave: async (v) => {
+        await api("/knowledge/setpoint", { divisao_id: t.divisao_id, c: Number(v.replace(",", ".")) });
+        refresh(`temp:${t.divisao_id}`);
+      },
+      onCancel: () => { form.remove(); mudar.hidden = false; mudar.focus(); },
+    });
+    tile.appendChild(form);
+  });
+  return tile;
+}
+
+function autonomyRow(a, refresh) {
+  const row = $el("div", "kn-autonomia");
+  row.appendChild($el("span", "kn-rotulo", a.nome));
+  const grupo = $el("div", "kn-niveis");
+  grupo.setAttribute("role", "group");
+  grupo.setAttribute("aria-label", `Autonomia: ${a.nome}`);
+  const erro = $el("div", "kn-erro");
+  erro.setAttribute("role", "alert");
+  LEVELS.forEach(([nivel, label]) => {
+    const b = $el("button", null, label);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(a.nivel === nivel));
+    b.dataset.focus = `aut:${a.categoria}:${nivel}`;
+    b.addEventListener("click", async () => {
+      if (a.nivel === nivel) return;
+      grupo.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      try {
+        await api("/knowledge/autonomy", { categoria: a.categoria, nivel });
+        refresh(`aut:${a.categoria}:${nivel}`);
+      } catch (e) {
+        erro.textContent = e.message;
+        grupo.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+      }
+    });
+    grupo.appendChild(b);
+  });
+  row.append(grupo, erro);
+  return row;
 }
 
 async function open() {
@@ -65,24 +171,25 @@ async function open() {
   modal.append(header, corpo);
   fundo.appendChild(modal);
   document.body.appendChild(fundo);
-  const close = () => fundo.remove();
+  const opener = document.activeElement;
+  const close = () => { fundo.remove(); document.removeEventListener("keydown", esc); opener?.focus?.(); };
+  function esc(e) { if (e.key === "Escape") close(); }
   fechar.addEventListener("click", close);
   fundo.addEventListener("click", (e) => { if (e.target === fundo) close(); });
-  document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
+  document.addEventListener("keydown", esc);
+  fechar.focus();
 
-  async function render() {
-    corpo.innerHTML = "";
+  async function render(focusKey) {
     let k;
     try {
       k = await api("/knowledge");
     } catch (e) {
-      corpo.appendChild($el("div", "vazio", `Não consegui ler: ${e.message}`));
+      corpo.replaceChildren($el("div", "vazio", `Não consegui ler: ${e.message}`));
       return;
     }
-    const onEdit = async (p) => {
-      const text = window.prompt(EDIT_HINT[p.tipo] || "Novo valor:");
-      if (!text) return;
-      try { await api(`/knowledge/prefs/${p.id}/edit`, { text }); } catch (e) { alert(e.message); }
+    corpo.replaceChildren();
+    const onEdit = async (p, text) => {
+      await api(`/knowledge/prefs/${p.id}/edit`, { text });
       render();
     };
     const onRevoke = async (p) => {
@@ -90,23 +197,40 @@ async function open() {
       try { await api(`/knowledge/prefs/${p.id}/revoke`, {}); } catch (e) { alert(e.message); }
       render();
     };
-    corpo.appendChild($el("p", "rgpd", k.nota));
-    section(corpo, "Preferências ativas", k.preferencias.map((p) => item(p, { onEdit, onRevoke })),
-      "Ainda não guardei preferências tuas.");
+
+    corpo.appendChild($el("h3", null, "Temperatura alvo"));
+    const grelha = $el("div", "kn-grelha");
+    k.temperaturas.forEach((t) => grelha.appendChild(tempTile(t, render)));
+    corpo.appendChild(k.temperaturas.length ? grelha : $el("div", "vazio", "Ainda estou a ler as divisões da casa."));
+
+    corpo.appendChild($el("h3", null, "O que a casa faz sozinha"));
+    const aut = $el("div", "kn-cartao");
+    k.autonomia.forEach((a) => aut.appendChild(autonomyRow(a, render)));
+    corpo.appendChild(aut);
+
+    section(corpo, "Outras preferências", k.preferencias.map((p) => item(p, { onEdit, onRevoke })),
+      "Nenhuma. Diz-me no chat, por exemplo «não quero sugestões depois das 23h».");
     section(corpo, "Regras", k.regras.map((p) => item(p, { onRevoke, revokeLabel: "Revogar (desativa o cenário)", extra: p.onde })),
-      "Sem regras.");
-    section(corpo, "Sugestões silenciadas", k.silenciadas.map((p) => item(p, { onRevoke, revokeLabel: "Voltar a permitir" })),
-      "Nenhuma.");
-    section(corpo, "Disposição do 3D (alterações)", k.layout.map((p) => item(p, {})), "Sem alterações.");
-    const hist = k.historico.map((p) => item(p, {}, ))
-      .map((row, i) => {
-        const p = k.historico[i];
-        const estado = p.ativa ? "ativa" : (p.substituida_por ? "substituída" : "revogada");
-        row.querySelector(".meta").textContent += ` · ${p.tipo_pt} · ${estado}`;
-        return row;
-      });
-    section(corpo, "Histórico de alterações", hist, "Sem histórico.");
-    corpo.appendChild($el("p", "rgpd", `Respondeste a ${k.decisoes_respondidas} decisões; essas respostas também contam como o que sei de ti.`));
+      "Sem regras. Cria uma no chat: «se abrir a janela com o aquecedor ligado, avisa-me».");
+    if (k.silenciadas.length) {
+      section(corpo, "Sugestões silenciadas", k.silenciadas.map((p) => item(p, { onRevoke, revokeLabel: "Voltar a permitir" })), "");
+    }
+
+    const hist = $el("details", "kn-historico");
+    hist.appendChild($el("summary", null, `Histórico de alterações (${k.historico.length + k.layout.length})`));
+    const rows = k.historico.map((p) => {
+      const row = item(p, {});
+      const estado = p.ativa ? "ativa" : (p.substituida_por ? "substituída" : "revogada");
+      row.querySelector(".meta").textContent += ` · ${p.tipo_pt} · ${estado}`;
+      return row;
+    });
+    if (k.layout.length) rows.push(...k.layout.map((p) => item(p, { extra: "disposição do 3D" })));
+    if (!rows.length) hist.appendChild($el("div", "vazio", "Sem histórico."));
+    rows.forEach((r) => hist.appendChild(r));
+    corpo.appendChild(hist);
+
+    corpo.appendChild($el("p", "rgpd", `Respondeste a ${k.decisoes_respondidas} decisões; essas respostas também contam como o que sei de ti. ${k.nota}`));
+    if (focusKey) corpo.querySelector(`[data-focus="${focusKey}"]`)?.focus();
   }
 
   apagar.addEventListener("click", async () => {

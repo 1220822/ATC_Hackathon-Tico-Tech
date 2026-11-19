@@ -29,7 +29,7 @@ from ..perception.state import HomeState, de, em, fmt
 from ..prefs.models import CATEGORY_PT, validate_value
 from ..storage.db import SqliteStore, dumps, loads
 from .answers import answer_state
-from .intents import ChatIntent, PrefRequest, classify, norm
+from .intents import SEC_AWAY, ChatIntent, PrefRequest, classify, norm, plan, split_requests, understood
 from .rules import RuleProblem, build_rule, scenario_payload
 
 log = logging.getLogger(__name__)
@@ -87,8 +87,10 @@ class ChatService:
         self.memory, self.s, self.coordinator, self.mem, self.llm = memory, settings, coordinator, memories, llm
         self.insights = insights  # src.insights.service.InsightService (step 6)
         self.layout = layout  # src.twin.edit.LayoutEditor (step 7)
+        self.vision = None  # src.vision.worker.VisionWorker: "está alguém na sala?" looks through the camera
         self.store = ChatStore(memories.prefs.path)
         self.confirm: dict | None = None  # what waits for "sim" / "não"
+        self.queue: list[tuple[ChatIntent, str]] = []  # requests of the same message waiting for that answer
         self._lock = threading.RLock()
 
     # -- helpers -----------------------------------------------------------------------
@@ -118,25 +120,97 @@ class ChatService:
             t = norm(text)
             if self.confirm is not None:
                 if YES.match(t):
-                    return out + self._do_confirm()
+                    return out + self._do_confirm() + self._next_in_queue()
                 if NO.match(t) and len(t) < 40:
-                    return out + [self._cancel()]
+                    return out + [self._cancel()] + self._next_in_queue()
                 self.confirm = None  # a new request replaces the open question
+                self.queue = []
             state = self._state()
             if state is None:
                 return out + [self.say("Ainda estou a ler a casa. Tenta daqui a uns segundos.")]
-            pending_dec = self.mem.decisions.pending()
-            pending_sug = self.insights.pending() if self.insights else []
-            intent = classify(text, self.llm, self._rooms(), bool(pending_dec), bool(pending_sug))
-            log.info("chat intent (%s): %s", intent.origem, intent.model_dump(exclude_none=True))
+            return out + self._run(self._read(text), state)
+
+    def _read(self, text: str) -> list[tuple[ChatIntent, str]]:
+        """Message -> [(intent, part of the text)]. With an LLM, every message is read by the LLM thinking
+        it over (CHAT_REASONING_EFFORT, default "high"), which returns every request of the message: slower,
+        but the answers are right. The PT-PT rules read it too, only to fill fields the LLM left out, and
+        are the whole reading when there is no LLM (or it fails)."""
+        pending_dec = bool(self.mem.decisions.pending())
+        pending_sug = bool(self.insights.pending()) if self.insights else False
+        rooms = self._rooms()
+        think = self.llm is not None and bool(self.s.chat_reasoning_effort)
+        parts = split_requests(text)
+        items = [(classify(p, None if think else self.llm, rooms, pending_dec, pending_sug), p) for p in parts]
+        if len(items) > 1:  # "vou sair": context only, unless nothing else was understood
+            useful = [(i, p) for i, p in items if i.intent != "outro"]
+            items = useful or items[:1]
+        if think:
+            planned = plan(text, self.llm, rooms, pending_dec, pending_sug, self.s.chat_reasoning_effort) or []
+            # an answer to a proposal or suggestion that is not there is a misreading
+            planned = [i for i in planned
+                       if not (i.intent == "responder_proposta" and not pending_dec and not i.sempre)
+                       and not (i.intent == "responder_sugestao" and not pending_sug)]
+            if planned:
+                for i in planned:  # fields the rules extracted reliably fill what the LLM left out
+                    same = next((r for r, _ in items if r.intent == i.intent), None)
+                    for f in ("divisao", "topico", "periodo", "preferencia", "regra", "layout", "abertura", "comando"):
+                        if same is not None and getattr(i, f) is None and getattr(same, f) is not None:
+                            setattr(i, f, getattr(same, f))
+                items = [(i, text) for i in planned if i.intent != "outro" or len(planned) == 1]
+                log.info("chat: pensei (%s) -> %d pedido(s)", self.s.chat_reasoning_effort, len(items))
+        away = bool(SEC_AWAY.search(norm(text)))
+        for i, _ in items:  # "vou sair, arma a casa": the context of the whole message counts
+            c = i.comando
+            if c is not None and c.dispositivo == "seguranca" and c.acao == "armar_casa" and away:
+                c.acao = "armar_ausente"
+        # the same request said twice ("foi falso alarme, desliga o alarme" = desarmar + desarmar) is done
+        # once: never two confirmations for one thing
+        seen, unique = set(), []
+        for i, p in items:
+            key = repr(i.model_dump(exclude={"origem", "comentario"}, exclude_none=True))
+            if key not in seen:
+                seen.add(key)
+                unique.append((i, p))
+        items = unique
+        for i, _ in items:
+            log.info("chat intent (%s): %s", i.origem, i.model_dump(exclude_none=True))
+        # what runs at once first (commands, questions); what needs a confirmation after, one at a time
+        immediate = [(i, p) for i, p in items
+                     if i.intent in ("pergunta_estado", "responder_proposta", "responder_sugestao")
+                     or (i.intent == "comando_dispositivo" and i.comando is not None
+                         and i.comando.dispositivo != "seguranca")]
+        return immediate + [x for x in items if x not in immediate]
+
+    def _run(self, items: list[tuple[ChatIntent, str]], state: HomeState) -> list[dict]:
+        out: list[dict] = []
+        for k, (intent, text) in enumerate(items):
             try:
-                out += self._dispatch(intent, text, state, pending_dec, pending_sug)
+                out += self._dispatch(intent, text, state, self.mem.decisions.pending(),
+                                      self.insights.pending() if self.insights else [])
             except RequestRefused as e:
                 out.append(self.say(f"Não consegui: {e}."))
             except Exception as e:  # noqa: BLE001 - the chat must answer something
                 log.exception("chat handler failed")
                 out.append(self.say(f"Algo correu mal ao tratar o pedido ({type(e).__name__})."))
-            return out
+            if self.confirm is not None and k + 1 < len(items):  # wait for the answer, then go on
+                self.queue = items[k + 1:]
+                break
+        return out
+
+    def _next_in_queue(self) -> list[dict]:
+        """After a confirmation was answered: the next requests of the same message."""
+        if not self.queue or self.confirm is not None:
+            return []
+        items, self.queue = self.queue, []
+        state = self._state()
+        return self._run(items, state) if state is not None else []
+
+    def clear(self) -> int:
+        """«Limpar conversa»: the messages go, and so does any question still open in them (a confirmation
+        and the requests queued behind it). Preferences, rules and the agents' decisions stay."""
+        with self._lock:
+            self.confirm, self.queue = None, []
+            return self.store.clear()
 
     def action(self, action: str, id: str | None = None, response: str | None = None,
                comment: str | None = None) -> list[dict]:
@@ -145,11 +219,11 @@ class ChatService:
             if action == "confirm":
                 if self.confirm is None or (id and self.confirm["id"] != id):
                     return [self.say("Essa pergunta já não está em aberto.")]
-                return [self.store.add("user", "Confirmar")] + self._do_confirm()
+                return [self.store.add("user", "Confirmar")] + self._do_confirm() + self._next_in_queue()
             if action == "cancel":
                 if self.confirm is not None and id and self.confirm["id"] != id:
                     return [self.say("Essa pergunta já não está em aberto.")]
-                return [self.store.add("user", "Cancelar"), self._cancel()]
+                return [self.store.add("user", "Cancelar"), self._cancel()] + self._next_in_queue()
             if action == "decision":
                 label = {"approved": "Aprovar", "rejected": "Rejeitar", "modified": "Alterar"}.get(response, response)
                 out = [self.store.add("user", label + (f": {comment}" if comment else ""))]
@@ -218,8 +292,41 @@ class ChatService:
             return self.insights.on_request(chat=self)
         if topic in ("regras", "preferencias"):
             return [self.say(self.knowledge_summary(state))]
+        if topic == "presenca":
+            return [self._look(intent, state)]
         room = state.room(intent.divisao).id if intent.divisao and state.room(intent.divisao) else None
         return [self.say(answer_state(topic, intent.periodo or "agora", room, state, self.mem))]
+
+    def _look(self, intent: ChatIntent, state: HomeState) -> dict:
+        """Presence: analyse the camera image now with the vision model (never guessed from sensors)."""
+        cams = state.devices_by_role("camera")
+        room = state.room(intent.divisao) if intent.divisao else None
+        if not cams:
+            return self.say("Não há nenhuma câmara na casa, por isso não consigo ver se está alguém.")
+        cam = next((c for c in cams if room is None or c.room_id == room.id), None)
+        if cam is None:
+            where = sorted({c.room_name for c in cams})
+            return self.say(f"Não há câmara {em(room.name)}; "
+                            + (f"a única câmara está {em(where[0])}." if len(where) == 1 else
+                               "as câmaras estão " + ", ".join(em(w) for w in where) + "."))
+        if self.vision is None:
+            return self.say("A análise da câmara está desligada (VISION_ENABLED=false).")
+        obs = self.vision.analyze_now(room=cam.room_id, context="general")
+        if obs.status != "ok":
+            why = {"capture_error": "não consegui obter a imagem da câmara",
+                   "timeout": "o modelo de visão demorou demasiado",
+                   "inference_error": "o modelo de visão falhou"}.get(obs.status, obs.status)
+            return self.say(f"Não consegui ver {em(cam.room_name)}: {why}.")
+        if obs.person_count:
+            who = "1 pessoa" if obs.person_count == 1 else f"{obs.person_count} pessoas"
+            head = f"Sim, vejo {who} {em(cam.room_name)}"
+        else:
+            head = f"Não vejo ninguém {em(cam.room_name)}"
+        text = f"{head} (câmara, há instantes; confiança {round(obs.overall_confidence * 100)} %)."
+        if obs.scene_note_pt:
+            text += f" {obs.scene_note_pt}"
+        image = f"/vision/frames/{obs.frame_path}" if obs.frame_path else None
+        return self.say(text, image=image, vision_id=obs.id)
 
     def knowledge_summary(self, state: HomeState | None) -> str:
         prefs = [p for p in self.mem.prefs.get_active() if p["key"] != "layout"]
@@ -291,12 +398,21 @@ class ChatService:
             return [self.say("Não percebi a regra. Exemplo: «se abrir a janela com o aquecedor ligado, avisa-me».")]
         names = {p["value"]["name"] for p in self.mem.prefs.history("rule")}
         try:
-            rule, description = build_rule(intent.regra, state, names)
+            rule, description = build_rule(intent.regra, state, names, setpoint=self._setpoint)
         except RuleProblem as e:
             return [self.say(str(e))]
         note = " (Está em modo de ensaio: o cenário fica registado mas não é enviado ao MCP.)" if self.s.dry_run else ""
         return [self._ask("rule", f"Vou criar a regra {rule['name']} no MCP: {description}.{note} Confirmas?",
                           {"rule": rule}, text)]
+
+    def _setpoint(self, room_id: str) -> float | None:
+        """Target temperature of a room now: the user's preference, else config/home.json / SETPOINT_C."""
+        c, _ = self.mem.prefs.setpoint(room_id)
+        if c is not None:
+            return c
+        st = self._state()
+        room = st.rooms.get(room_id) if st else None
+        return room.setpoint_c if room else None
 
     def _command(self, intent: ChatIntent, state: HomeState) -> list[dict]:
         c = intent.comando
@@ -305,7 +421,13 @@ class ChatService:
             if mode is None:
                 return [self.say("Não percebi o que queres fazer à segurança.")]
             label = {"STAY": "armar a casa (modo em casa)", "AWAY": "armar a casa (modo ausente)", "DISARMED": "desarmar a casa"}[mode]
-            return [self._ask("security", f"Vou {label}. Confirmas?", {"mode": mode})]
+            alarmed = state.is_alarmed or getattr(self.coordinator, "emergency_active", False) or any(
+                h.caps.get("alarmState") == "alarm" for h in state.devices_by_role("hub"))
+            if mode == "DISARMED" and alarmed:
+                label += " e desligar o alarme"
+            hint = {"STAY": " (Para sair de casa: «arma em modo ausente».)",
+                    "AWAY": " (Se ficares em casa: «arma em modo casa».)"}.get(mode, "")
+            return [self._ask("security", f"Vou {label}. Confirmas?{hint}", {"mode": mode})]
         role = "light" if c.dispositivo == "luz" else "plug"
         room = state.room(c.divisao) if c.divisao else None
         dev = state.by_role(role, room.id) if room else state.by_role(role)
@@ -345,6 +467,9 @@ class ChatService:
             return [self.say(f"Não consegui: {e}.")]
         except (ValidationError, ValueError) as e:
             return [self.say(f"Não consegui guardar: {e}.")]
+        except Exception as e:  # noqa: BLE001 - a confirmation must answer in the chat, never a 500
+            log.exception("chat confirmation failed")
+            return [self.say(f"Não consegui: algo correu mal ({type(e).__name__}).")]
         return [self.say("Não sei confirmar isso.")]
 
     def _cancel(self) -> dict:

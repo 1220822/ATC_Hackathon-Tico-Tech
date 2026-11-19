@@ -70,6 +70,28 @@ class SharedMemory:
         self._agents: dict[str, dict] = {}  # A2A agents as seen by the Coordinator's bridge
         self._vision_by_room: dict[str, Any] = {}  # latest VisionObservation per room id
         self._latest_vision: Any = None
+        # The user disarmed during an alarm ("fui eu, falso alarme"): that alarm is over for us even if
+        # the hub keeps reporting isAlarmed for a while. Holds the key of the newest alarm entry then
+        # ("" if there was none); a newer alarm entry is a new alarm.
+        self._silenced_alarm: str | None = None
+
+    def silence_alarm(self, key: str | None) -> None:
+        with self._lock:
+            self._silenced_alarm = key
+
+    @property
+    def silenced_alarm(self) -> str | None:
+        with self._lock:
+            return self._silenced_alarm
+
+    def alarm_silenced(self, state: "HomeState | None" = None) -> bool:
+        """True while the alarm the user stopped is still the newest one."""
+        key = self.silenced_alarm
+        if key is None:
+            return False
+        state = state or self.state
+        newest = state.alarms[0].key if state is not None and state.alarms else ""
+        return newest == key
 
     def update_state(self, state: HomeState | None) -> None:
         with self._lock:

@@ -8,7 +8,7 @@ pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest                       # testes
 python -m src.perception [--sim]       # perceção: estado inicial por divisão + eventos
 python -m src.api [--sim] [--port 8000]   # API + UI em http://127.0.0.1:8000
-                                       # gémeo digital 3D em http://127.0.0.1:8000/twin
+                                       # casa em 3D em http://127.0.0.1:8000/twin
 python scripts/simulate.py rooms       # divisões do simulador
 python scripts/simulate.py temp 18 --room cozinha
 python -m src.storage.recorder         # só perceção + gravação do histórico (deixar a correr à noite)
@@ -36,6 +36,10 @@ Guião da demo: [docs/demo.md](docs/demo.md).
   estado (respondidas com dados reais), preferências, regras (cenário `TT_` no MCP via
   `guard()`/`execute()`), disposição do 3D, respostas a propostas e sugestões, comandos diretos.
   Tudo o que fica guardado ou é enviado é primeiro reformulado e confirmado.
+- Vários pedidos numa só mensagem ("vou sair, arma a casa e liga o aquecedor"): o que é imediato executa
+  logo; o que precisa de confirmação é perguntado um de cada vez. Cada mensagem é lida pelo LLM com
+  raciocínio (`CHAT_REASONING_EFFORT`, omissão `high`), que devolve a lista de pedidos; as regras PT-PT
+  só completam campos em falta e servem sozinhas quando não há LLM. "Quando a temperatura estiver boa" = a temperatura alvo.
 - Autonomia por categoria (`energia`, `conforto`, `seguranca`, `luz`): `auto` executa (respeita o
   `DRY_RUN`), `perguntar` (omissão) deixa a decisão pendente no chat com Aprovar / Rejeitar / Alterar,
   `nunca` só regista. Ao fim de 3 aprovações seguidas (ou com "faz sempre assim"), a casa pergunta se
@@ -47,15 +51,24 @@ Guião da demo: [docs/demo.md](docs/demo.md).
 - Janelas e portas da planta, pelo chat: "acrescenta uma janela na parede da direita do quarto",
   "a janela da sala tem 1,5 m de largura", "passa a janela do quarto para a parede da esquerda",
   "remove a janela do quarto". Sem sobreposições, cabem na parede, e o sensor da janela vai com ela.
+- O sensor de contacto chama-se pelo que vigia no 3D: se estiver numa porta (pelo chat, "o sensor de
+  contacto está junto à porta", ou arrastado para junto dela em **Ajustar 3D**), os eventos, os agentes, as
+  respostas e os nomes das regras novas dizem "porta" (`TT_porta_aberta_...`) em vez de "janela".
 - 3D: "o quarto fica à direita da sala" ou o modo **Ajustar 3D** (arrastar, gravar, desfazer). As
   alterações ficam em `var/layout_user.json`; o `config/layout.json` continua a ser a base versionada.
 
-### Gémeo digital 3D (`/twin`)
+### Casa em 3D (`/twin`)
 
 - Mostra só as divisões e os dispositivos do `get_home` (as divisões simuladas do `config/home.json`
   ficam de fora). O sítio de cada coisa vem de `config/layout.json`; para outra casa:
   `python scripts/layout_init.py --force` (lê o `get_home`, só leitura) e depois ajustar à mão.
 - Tempo real por Server-Sent Events (`/twin/stream`), com recurso a polling de 2 s.
+- A câmara aponta sempre para a divisão inteira (centro do chão, cone até ao canto mais afastado), também
+  depois de mudada pelo chat ou à mão.
+- Câmara em direto: com `CAMERA_RTSP_URL=rtsp://...` no `.env` (e `opencv-python`), a API mantém o stream
+  aberto (RTSP por TCP) e o painel da câmara no 3D mostra-o (`/vision/live.mjpg`, `/vision/live.jpg`) com o
+  botão **Analisar agora**, que envia o frame atual ao modelo de visão (`VISION_MODEL`, por omissão o
+  `LLM_MODEL`, qwen3.8). Os eventos da câmara e alarmes com a casa armada usam o mesmo frame.
 - Three.js r160 está copiado em `src/ui/static/vendor/three/` (funciona sem internet).
 - Ensaio sem tocar na casa: `python -m src.api --sim` num terminal, `python scripts/simulate.py cenario janela` noutro.
   Para a reação ficar bem abaixo de 3 s, `POLL_INTERVAL_S=1`.
@@ -86,7 +99,7 @@ python -m src.agents                      # servidores A2A dos quatro agentes
 python -m src.api                         # perceção + Coordenador + 3D em http://127.0.0.1:8000/twin
 ```
 
-- `LLM_REASONING_EFFORT=none` (omissão) desliga o raciocínio do modelo: ~1 s por resposta com o
-  qwen3.8 em vez de 8–10 s, com as mesmas propostas. `AGENTS=false` desliga os agentes.
+- O Coordenador (chat e agentes) usa sempre o qwen3.8 com raciocínio (`LLM_REASONING_EFFORT`, omissão
+  `high`): mais lento, mas é a qualidade das respostas que conta. A câmara não pensa (`VISION_REASONING_EFFORT=none`). `AGENTS=false` desliga os agentes.
 - No 3D, o cabeçalho mostra o modo (MCP real · atua / dry-run) e cada agente (à espera, a pensar…, tempo da última resposta, indisponível)
   e as propostas e decisões aparecem na linha do tempo e em balões sobre o dispositivo.

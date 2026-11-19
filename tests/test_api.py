@@ -41,6 +41,11 @@ class TestApi(unittest.TestCase):
         self.client.close()
         self.tmp.cleanup()
 
+    def test_ui_files_are_revalidated(self):
+        r = self.client.get("/twin/ui/twin.js")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["cache-control"], "no-cache")
+
     def test_503_before_first_poll(self):
         self.memory.update_state(None)
         self.assertEqual(self.client.get("/rooms").status_code, 503)

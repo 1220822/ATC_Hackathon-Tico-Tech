@@ -68,6 +68,13 @@ class DeviceState(BaseModel):
     room_name: str = ""
     source: Literal["mcp", "sim"] = "mcp"  # where writes for this device must go
     caps: dict[str, Any] = Field(default_factory=dict)
+    opening: Literal["window", "door"] | None = None  # contact sensor: what it watches (from the 3D layout)
+
+    @property
+    def opening_noun(self) -> str:
+        """PT noun of what a contact sensor watches: "porta" or "janela" (default). Both are feminine,
+        so "a {noun} aberta / fechada" works for either."""
+        return "porta" if self.opening == "door" else "janela"
 
 
 class RoomState(BaseModel):
@@ -150,6 +157,12 @@ class HomeState(BaseModel):
         return None if v is None else v == "alarm"
 
     @property
+    def contact_noun(self) -> str:
+        """"porta" / "janela" for the first contact sensor (single-device views)."""
+        dev = self.by_role("contact")
+        return dev.opening_noun if dev else "janela"
+
+    @property
     def temperature(self) -> float | None:
         return _num(self.cap("temperature", "temperatureValue"))
 
@@ -197,8 +210,8 @@ class HomeState(BaseModel):
             out["simulado"] = True
         devs = self.room_devices(r.id)
         roles = {d.role for d in devs}
-        if "contact" in roles:
-            out["janela_aberta"] = self.cap("contact", "sensorState", room=r.id) == "alarm"
+        for c in (d for d in devs if d.role == "contact"):
+            out.setdefault(f"{c.opening_noun}_aberta", c.caps.get("sensorState") == "alarm")
         if "temperature" in roles:
             out["temperatura_c"] = _num(self.cap("temperature", "temperatureValue", room=r.id))
             out["humidade_pct"] = _num(self.cap("temperature", "humidityValue", room=r.id))
@@ -225,7 +238,7 @@ class HomeState(BaseModel):
         return {
             "seguranca": self.security_status,
             "alarme_ativo": self.is_alarmed,
-            "janela_aberta": self.contact_open,
+            f"{self.contact_noun}_aberta": self.contact_open,
             "temperatura_c": self.temperature,
             "humidade_pct": self.humidity,
             "aquecedor_ligado": self.plug_on,
@@ -323,6 +336,16 @@ def _iter_devices(home: dict):
             yield None, d
 
 
+def _contact_openings(settings: Settings) -> dict[str, str]:
+    """Contact sensor -> "door" / "window", from the 3D layout (re-read when the file changes), so a
+    sensor moved to a door in the 3D is called a door by events, agents, rules and the chat."""
+    try:
+        from ..twin.layout import contact_openings  # lazy: twin imports this module
+        return contact_openings(settings)
+    except Exception:  # noqa: BLE001 - the layout is optional for perception
+        return {}
+
+
 def normalize(raw: dict, settings: Settings, now: float | None = None) -> HomeState:
     now = time.time() if now is None else now
     home = raw.get("home") or {}
@@ -332,6 +355,7 @@ def normalize(raw: dict, settings: Settings, now: float | None = None) -> HomeSt
     sim_rooms = set(raw.get("sim_rooms") or [])
     devices: dict[str, DeviceState] = {}
     rooms: dict[str, RoomState] = {}
+    openings = _contact_openings(settings)
 
     def new_room(room_id: str, name: str, type_: str = "") -> RoomState:
         sp = config.params_for(room_id, name).setpoint_c
@@ -364,6 +388,7 @@ def normalize(raw: dict, settings: Settings, now: float | None = None) -> HomeSt
             room_name=room_name,
             source="sim" if room_id in sim_rooms else default_source,
             caps=caps,
+            opening=(openings.get(d["id"], "window") if d.get("type") == "contactSensor" else None),
         )
         rooms[room_id].device_ids.append(d["id"])
 
@@ -372,7 +397,9 @@ def normalize(raw: dict, settings: Settings, now: float | None = None) -> HomeSt
     return HomeState(
         ts=now,
         home_name=home.get("name", ""),
-        security_status=str(security.get("status", "DISARMED")).upper(),
+        # after patch_home_security_status(disarm) the MCP reports "DISARM" (seen 2026-11-19)
+        security_status={"DISARM": "DISARMED"}.get(str(security.get("status", "DISARMED")).upper(),
+                                                   str(security.get("status", "DISARMED")).upper()),
         is_alarmed=bool(security.get("isAlarmed", False)),
         devices=devices,
         rooms=rooms,
@@ -422,6 +449,9 @@ def _alarm_device(entry: AlarmEntry, kind: str, state: HomeState) -> tuple[Devic
 
 # --------------------------------------------------------------------- diff
 
+ALARM_LATE_S = 120.0
+
+
 def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Event]:
     """Events for what changed between two snapshots. First snapshot -> no events."""
     if prev is None:
@@ -440,6 +470,11 @@ def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Ev
     seen = {a.key for a in prev.alarms}
     for a in reversed(curr.alarms):  # oldest first
         if a.key in seen:
+            continue
+        # the MCP's alarm history can bring back an old entry (seen 19/11: arming at 17:07 brought back
+        # the alarm of 16:07, which became a "new" intrusion and turned the lights red). Only an alarm
+        # newer than the previous snapshot is new; ALARM_LATE_S of margin for an entry the MCP lists late
+        if a.ts and prev.ts and a.ts < prev.ts - ALARM_LATE_S:
             continue
         if a.event_type == "CANCEL":
             add("alarm_cancelled", "O alarme foi cancelado.", alarm=a.model_dump())
@@ -485,9 +520,9 @@ def diff(prev: HomeState | None, curr: HomeState, settings: Settings) -> list[Ev
         if dev.role == "contact" and changed("sensorState"):
             opened = dev.caps.get("sensorState") == "alarm"
             add("contact_opened" if opened else "contact_closed",
-                f"Janela{de_room} {'aberta' if opened else 'fechada'}.",
+                f"{dev.opening_noun.capitalize()}{de_room} {'aberta' if opened else 'fechada'}.",
                 "warning" if opened and curr.armed else "info", dev,
-                open=opened, armed=curr.armed, security=curr.security_status)
+                open=opened, armed=curr.armed, security=curr.security_status, opening=dev.opening_noun)
 
         if changed("tamperState") and dev.caps.get("tamperState") == "alarm":
             add("tamper_alarm", f"{dev.name}{de_room}: tentativa de manipulação detetada.", "warning", dev)
@@ -583,9 +618,7 @@ class TemperatureTrend:
                rs: Settings) -> Event:
         open_rooms = _room_names(state.open_contacts())
         heater_rooms = _room_names(state.plugs_on())
-        context = []
-        if open_rooms:
-            context.append("janela aberta " + ", ".join(em(n) for n in open_rooms))
+        context = [f"{d.opening_noun} aberta{_sp(em(d.room_name))}" for d in state.open_contacts()]
         if heater_rooms:
             context.append("aquecedor ligado " + ", ".join(em(n) for n in heater_rooms))
         return Event(

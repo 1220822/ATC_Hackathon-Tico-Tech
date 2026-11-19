@@ -1,14 +1,14 @@
-# Gémeo digital 3D: verificação (18/11/2026)
+# Casa em 3D: verificação (18/11/2026)
 
 ## Testes automáticos
 
-`python -m pytest`: 92 testes. Os do gémeo estão em `tests/test_twin_layout.py`, `tests/test_twin_state.py` e
+`python -m pytest`: 92 testes. Os da vista 3D estão em `tests/test_twin_layout.py`, `tests/test_twin_state.py` e
 `tests/test_coordinator.py`:
 
 - `/twin/state` com o formato novo do `get_home` (`rooms[].devices`): 2 divisões e 7 dispositivos, valores normalizados.
 - Dispositivo sem layout: continua no `/twin/state`, no centro da sua divisão (`placed: "default"`), com aviso.
 - Divisão sem layout: é colocada ao lado das outras, com aviso. Se o layout e o MCP discordarem sobre a divisão, ganha o MCP.
-- Divisões simuladas do `config/home.json` (Cozinha): ficam fora do gémeo.
+- Divisões simuladas do `config/home.json` (Cozinha): ficam fora da vista 3D.
 - Stream SSE: `snapshot`, depois `state` a cada poll e `event`/`decision` por item.
 - Coordenador: dry-run não escreve; dispositivo desconhecido → 404; central/segurança → recusado; dispositivo offline → recusado.
 

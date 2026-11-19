@@ -320,5 +320,5 @@ VISION_FRAMES_DIR=                  # vazio = var/frames/ (gitignored)
 
 - [ ] **Acesso RTSP à câmara física:** confirmar se a câmara da Altice expõe RTSP na rede do hackathon (credenciais + IP) ou se na demo se usará `WebcamFrameSource` / `FileFrameSource`.
 - [ ] **Capacidade `motionAlarmSwitch` da câmara real:** confirmar se ativar `motionAlarmSwitch=true` na app/MCP faz `motionDetected` atualizar em tempo real durante o polling.
-- [ ] **UI / Gémeo Digital 3D:** confirmar com quem mantém `src/ui/` se quer exibir a miniatura do snapshot (`/vision/frames/{filename}`) na linha do tempo ou no painel do dispositivo `Camera` (o backend deixará o endpoint pronto desde logo).
+- [ ] **UI / Casa em 3D:** confirmar com quem mantém `src/ui/` se quer exibir a miniatura do snapshot (`/vision/frames/{filename}`) na linha do tempo ou no painel do dispositivo `Camera` (o backend deixará o endpoint pronto desde logo).
 - [ ] **Nome da branch:** `feat/camera-vision` criada a partir de `main` quando a equipa validar este documento.

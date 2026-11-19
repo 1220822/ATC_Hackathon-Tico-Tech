@@ -66,6 +66,38 @@ class TestKnowledgeApi(unittest.TestCase):
         k = c.get("/knowledge").json()
         self.assertEqual((k["preferencias"], k["regras"], k["historico"]), ([], [], []))
 
+    def test_dashboard_summary_set_in_place(self):
+        c = self.client
+        k = c.get("/knowledge").json()
+        quarto = next(t for t in k["temperaturas"] if t["divisao"] == "Quarto")
+        self.assertEqual((quarto["origem"], quarto["pref_id"]), ("casa", None))
+        self.assertEqual({a["categoria"]: a["nivel"] for a in k["autonomia"]},
+                         {"energia": "perguntar", "conforto": "perguntar", "seguranca": "perguntar", "luz": "perguntar"})
+        self.assertEqual(c.post("/knowledge/setpoint", json={"divisao_id": quarto["divisao_id"], "c": 22.5}).status_code, 200)
+        self.assertEqual(c.post("/knowledge/autonomy", json={"categoria": "energia", "nivel": "auto"}).status_code, 200)
+        k = c.get("/knowledge").json()
+        quarto = next(t for t in k["temperaturas"] if t["divisao"] == "Quarto")
+        self.assertEqual((quarto["c"], quarto["origem"]), (22.5, "tua"))
+        self.assertEqual(next(a for a in k["autonomia"] if a["categoria"] == "energia")["nivel"], "auto")
+        self.assertEqual(k["preferencias"], [])  # both are in the summary, not repeated in the list
+        self.assertEqual(self.mem.prefs.autonomy("energia"), "auto")
+        # out of range / unknown values are refused with a message
+        self.assertEqual(c.post("/knowledge/setpoint", json={"divisao_id": quarto["divisao_id"], "c": 45}).status_code, 400)
+        self.assertEqual(c.post("/knowledge/autonomy", json={"categoria": "energia", "nivel": "talvez"}).status_code, 400)
+
+
+    def test_clear_conversation_keeps_preferences(self):
+        c = self.client
+        c.post("/chat", json={"text": "Quero o quarto a 21 °C de manhã"})
+        c.post("/chat", json={"text": "sim"})
+        c.post("/chat", json={"text": "arma a casa"})  # leaves a question open
+        self.assertIsNotNone(self.chat.confirm)
+        out = c.post("/chat/clear").json()
+        self.assertGreaterEqual(out["apagadas"], 5)
+        self.assertEqual(c.get("/chat/messages").json(), [])
+        self.assertIsNone(self.chat.confirm)  # «sim» now does not arm the house
+        self.assertEqual(len(c.get("/knowledge").json()["preferencias"]), 1)  # the preference stays
+
 
 if __name__ == "__main__":
     unittest.main()

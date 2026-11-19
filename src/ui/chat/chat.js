@@ -22,6 +22,22 @@ async function api(path, body) {
   return res.json();
 }
 
+// categorical series colours, fixed order (validated all-pairs on the dark panel: blue, orange, aqua)
+const SERIES = ["#3987e5", "#d95926", "#199e70"];
+
+export function chartLegend(series) {
+  const box = $el("div", "tt-legenda");
+  box.style.cssText = "display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;font-size:11px";
+  series.forEach((s, i) => {
+    const item = $el("span", null);
+    const sw = $el("i", null);
+    sw.style.cssText = `display:inline-block;width:12px;height:2px;margin-right:6px;vertical-align:3px;background:${SERIES[i % SERIES.length]}`;
+    item.append(sw, `${s.label || `Série ${i + 1}`}${s.unit ? ` (${s.unit})` : ""}`);
+    box.appendChild(item);
+  });
+  return box;
+}
+
 // small SVG line chart: series [{label, unit, points: [[ts, value], ...]}], optional highlight windows
 export function lineChart(series, { height = 120, windows = [] } = {}) {
   const all = series.flatMap((s) => s.points);
@@ -40,20 +56,25 @@ export function lineChart(series, { height = 120, windows = [] } = {}) {
   for (const w of windows) {
     const r = document.createElementNS(svgNS, "rect");
     r.setAttribute("x", X(Math.max(w[0], x0))); r.setAttribute("width", Math.max(1, X(Math.min(w[1], x1)) - X(Math.max(w[0], x0))));
-    r.setAttribute("y", 0); r.setAttribute("height", height); r.setAttribute("fill", "rgba(242,177,60,.16)");
+    r.setAttribute("y", 0); r.setAttribute("height", height); r.setAttribute("fill", "rgba(250,178,25,.12)");
     svg.appendChild(r);
   }
-  const colors = ["#6aa8ff", "#3ccf7f", "#f2b13c"];
+  for (const v of [y0, (y0 + y1) / 2, y1]) {  // faint grid
+    const g = document.createElementNS(svgNS, "line");
+    g.setAttribute("x1", pad); g.setAttribute("x2", 300 - pad); g.setAttribute("y1", Y(v)); g.setAttribute("y2", Y(v));
+    g.setAttribute("stroke", "rgba(133,145,166,.18)"); g.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(g);
+  }
   series.forEach((s, i) => {
     const pl = document.createElementNS(svgNS, "polyline");
     pl.setAttribute("points", s.points.map((p) => `${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" "));
-    pl.setAttribute("fill", "none"); pl.setAttribute("stroke", colors[i % 3]); pl.setAttribute("stroke-width", "1.6");
-    pl.setAttribute("vector-effect", "non-scaling-stroke");
+    pl.setAttribute("fill", "none"); pl.setAttribute("stroke", SERIES[i % SERIES.length]); pl.setAttribute("stroke-width", "2");
+    pl.setAttribute("stroke-linejoin", "round"); pl.setAttribute("vector-effect", "non-scaling-stroke");
     svg.appendChild(pl);
   });
   for (const [v, y] of [[y1, pad - 3], [y0, height - 3]]) {
     const t = document.createElementNS(svgNS, "text");
-    t.setAttribute("x", 2); t.setAttribute("y", y); t.setAttribute("fill", "#95a0b3"); t.setAttribute("font-size", "9");
+    t.setAttribute("x", 2); t.setAttribute("y", y); t.style.fill = "var(--c-muted, #8591a6)"; t.setAttribute("font-size", "9");
     t.textContent = `${(Math.round(v * 10) / 10).toLocaleString("pt-PT")}${series[0]?.unit ? " " + series[0].unit : ""}`;
     svg.appendChild(t);
   }
@@ -68,7 +89,24 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
   h.appendChild($el("small", null, "Fala só comigo; eu trato do resto com os agentes."));
   const saber = $el("button", null, "O que a casa sabe de ti");
   saber.addEventListener("click", () => window.dispatchEvent(new CustomEvent("tt:knowledge")));
-  topo.append(h, saber);
+  const limpar = $el("button", null, "Limpar");
+  limpar.title = "Limpar a conversa";
+  limpar.setAttribute("aria-label", "Limpar a conversa");
+  limpar.addEventListener("click", async () => {
+    if (!confirm("Apagar toda a conversa? As preferências, as regras e as decisões dos agentes ficam.")) return;
+    limpar.disabled = true;
+    try {
+      await api("/chat/clear", {});
+      lista.replaceChildren();
+      answered.clear();
+    } catch (e) {
+      render({ id: `err${Date.now()}`, ts: Date.now() / 1000, role: "coordenador", text: `Não consegui limpar: ${e.message}` });
+    } finally {
+      limpar.disabled = false;
+      input.focus();
+    }
+  });
+  topo.append(h, limpar, saber);
   const lista = $el("div", "tt-chat-lista");
   const sugestoes = $el("div", "tt-chat-sugestoes");
   for (const ex of EXAMPLES) {
@@ -89,28 +127,72 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
   const answered = new Set();  // decision / confirm ids already answered: their buttons are disabled
   let busy = false;
 
+  function markAnswered(div) {
+    div.classList.add("respondido");
+    const olho = div.querySelector(".tt-olho");
+    if (olho && !olho.dataset.respondido) {
+      olho.dataset.respondido = "1";
+      olho.firstChild.textContent += " · respondida";
+    }
+  }
+
+  // messages that wait for the user are cards: [class, eyebrow, prefix to drop from the text]
+  function cardOf(m) {
+    if (m.role === "user") return null;
+    if (m.decision_id) return ["pendente", "Proposta para aprovares", /^Proposta para aprovares:\s*/];
+    if (m.confirm_id) return ["confirmar", "Confirmação", null];
+    if (m.suggestion_id) return ["sugestao", "Sugestão", null];
+    if (m.kind === "rule") return ["regra", "Regra tua", null];
+    return null;
+  }
+
   function render(m) {
     if (document.getElementById(`tt-msg-${m.id}`)) return;
+    if (m.role === "user" && typeof m.id === "number") {
+      // the server stores the message as soon as it arrives, so the poll can bring it back while the
+      // answer is still on its way: it takes the place of the copy shown on sending, never a second bubble
+      const pending = [...lista.querySelectorAll('[id^="tt-msg-tmp"]')].find((n) => n.dataset.text === m.text);
+      if (pending) { pending.id = `tt-msg-${m.id}`; delete pending.dataset.text; return; }
+    }
     const div = $el("div", `tt-msg ${m.role === "user" ? "user" : "coordenador"}`);
     div.id = `tt-msg-${m.id}`;
-    if (m.decision_id) div.classList.add("pendente");
-    if (m.suggestion_id) div.classList.add("sugestao");
-    if (m.kind === "rule") div.classList.add("regra");
+    if (String(m.id).startsWith("tmp")) div.dataset.text = m.text;
+    const card = cardOf(m);
+    const key = m.decision_id || m.confirm_id || m.suggestion_id || "";
+    let text = m.text;
+    if (card) {
+      const [cls, eyebrow, prefix] = card;
+      div.classList.add("cartao", cls);
+      if (prefix) text = text.replace(prefix, "");
+      const olho = $el("div", "tt-olho", eyebrow);
+      olho.appendChild($el("span", "hora", hhmm(m.ts)));
+      div.appendChild(olho);
+      if (key && answered.has(key)) markAnswered(div);
+    }
     const quem = $el("div", "quem", m.role === "user" ? "Tu" : "Coordenador");
     quem.appendChild($el("span", "hora", hhmm(m.ts)));
-    div.append(quem, $el("div", "texto", m.text));
+    div.append(quem, $el("div", "texto", text));
+    if (m.image) {  // what the camera saw (the frame the vision model analysed)
+      const img = document.createElement("img");
+      img.className = "tt-imagem";
+      img.alt = "Imagem da câmara analisada";
+      img.src = m.image;
+      img.loading = "lazy";
+      div.appendChild(img);
+    }
     const buttons = m.buttons || [];
     if (buttons.length || m.why || m.suggestion_id) {
       const row = $el("div", "tt-botoes");
-      const key = m.decision_id || m.confirm_id || m.suggestion_id || "";
       for (const b of buttons) {
         const btn = $el("button", /Aprovar|Confirmar|Aceitar|Está bem/.test(b.label) ? "primario" : null, b.label);
+        btn.type = "button";
         btn.disabled = answered.has(key);
         btn.addEventListener("click", () => press(b, row, key));
         row.appendChild(btn);
       }
       if (m.why || m.suggestion_id) {
-        const why = $el("button", null, "Porquê?");
+        const why = $el("button", "porque", "Porquê?");
+        why.type = "button";
         why.addEventListener("click", () => showWhy(m, div, why));
         row.appendChild(why);
       }
@@ -136,6 +218,7 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
         const ev = await api(`/insights/${m.suggestion_id}/evidence`);
         box.appendChild($el("div", null, ev.resumo || ""));
         box.appendChild(lineChart(ev.series || [], { windows: ev.janelas || [] }));
+        if ((ev.series || []).length > 1) box.appendChild(chartLegend(ev.series));
         if (ev.legenda) box.appendChild($el("div", null, ev.legenda));
       } catch (e) {
         box.appendChild($el("div", null, "Não consegui carregar o histórico."));
@@ -153,7 +236,9 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
       if (comment === null) return;
     }
     answered.add(key);
-    row.querySelectorAll("button").forEach((x) => { if (x.textContent !== "Porquê?") x.disabled = true; });
+    row.querySelectorAll("button").forEach((x) => { if (!x.classList.contains("porque")) x.disabled = true; });
+    const card = row.closest(".cartao");
+    if (card) markAnswered(card);
     try {
       const out = await api("/chat/action", { action: b.action, id: b.id || null, response: b.response || null, comment });
       out.messages.forEach(render);

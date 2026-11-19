@@ -12,7 +12,7 @@ import re
 import time
 
 from .context import describe_pref, scope_label
-from .prefs.models import KEY_LABEL_PT, LEVELS
+from .prefs.models import CATEGORIES, CATEGORY_PT, DEFAULT_LEVEL, KEY_LABEL_PT, LEVELS
 
 
 class KnowledgeError(ValueError):
@@ -54,11 +54,45 @@ class Knowledge:
         history = [_row(p, state) for p in self.mem.prefs.history(n=100)]
         decisions = self.mem.decisions.recent(200)
         answered = [d for d in decisions if d.get("user_response")]
-        return {"preferencias": prefs, "regras": rules, "silenciadas": muted, "historico": history,
+        temps = []
+        for room in (state.rooms.values() if state is not None else []):
+            c, p = self.mem.prefs.setpoint(room.id)
+            temps.append({"divisao_id": room.id, "divisao": room.name, "c": c if c is not None else room.setpoint_c,
+                          "pref_id": p["id"] if p else None,
+                          "origem": ("geral" if p["scope"] == "global" else "tua") if p else "casa",
+                          "frase": p.get("original_text") if p else None})
+        autonomy = []
+        for cat in CATEGORIES:
+            p = self.mem.prefs.autonomy_pref(cat)
+            p = p if p and not p["value"].get("kind") else None  # the category level, not one kind of decision
+            autonomy.append({"categoria": cat, "nome": CATEGORY_PT[cat], "nivel": p["value"]["level"] if p else DEFAULT_LEVEL,
+                             "pref_id": p["id"] if p else None})
+        return {"temperaturas": temps, "autonomia": autonomy,
+                "preferencias": [r for r in prefs if not (r["tipo"] == "setpoint_c" and not r["valor"].get("periods")) and
+                                 not (r["tipo"] == "autonomy" and not r["valor"].get("kind"))],
+                "regras": rules, "silenciadas": muted, "historico": history,
                 "layout": [_row(p, state) for p in self.mem.prefs.history("layout", n=20)],
                 "decisoes_respondidas": len(answered),
                 "nota": "Tudo fica guardado só neste computador (var/home.db). Os dados dos sensores (histórico "
                         "da casa) não são apagados por «apagar tudo»."}
+
+    def set_setpoint(self, room_id: str, c: float, state) -> dict:
+        """The target temperature of a room, set on the dashboard (a new version; the old one stays in the history)."""
+        if state is None or state.room(room_id) is None:
+            raise KnowledgeError("divisão desconhecida")
+        if not 10 <= c <= 30:
+            raise KnowledgeError("a temperatura tem de estar entre 10 e 30 °C")
+        name = state.room(room_id).name
+        return self.mem.prefs.set(f"room:{room_id}", "setpoint_c", {"c": round(c, 1), "periods": []}, "explicit",
+                                  f"definido em «O que a casa sabe de ti»: {name} a {c:g} °C")
+
+    def set_autonomy(self, category: str, level: str) -> dict:
+        if category not in CATEGORIES:
+            raise KnowledgeError("categoria desconhecida")
+        if level not in LEVELS:
+            raise KnowledgeError("usa auto, perguntar ou nunca")
+        return self.mem.prefs.set("global", "autonomy", {"category": category, "level": level}, "explicit",
+                                  f"definido em «O que a casa sabe de ti»: {CATEGORY_PT[category]} -> {level}")
 
     def edit(self, pref_id: str, text: str) -> dict:
         p = self.mem.prefs.get(pref_id)

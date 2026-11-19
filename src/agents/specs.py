@@ -30,8 +30,11 @@ Regras:
 - Só podes PROPOR ligar ou desligar dispositivos da lista "Dispositivos acionáveis" que vem na mensagem
   (luzes e tomadas). Nunca proponhas armar ou desarmar a segurança, nem outros dispositivos.
 - Não inventes valores: usa os dados da mensagem e, se precisares de mais, as ferramentas (só leitura).
-- Os sensores podem estar em divisões diferentes (ex.: janela na Sala, aquecedor no Quarto); diz sempre
+- Os sensores podem estar em divisões diferentes (ex.: porta na Sala, aquecedor no Quarto); diz sempre
   a divisão de cada coisa.
+- O sensor de contacto pode estar numa janela ou numa porta: o estado da casa diz qual ("janela_aberta"
+  ou "porta_aberta") e o evento também ("Porta da Sala aberta."). Usa sempre a palavra que vem nos dados;
+  nunca chames janela a uma porta.
 - Se não houver nada a fazer, devolve "propostas": [].
 - O "resumo" descreve a situação numa frase; não repitas nele as propostas (vão no campo "propostas").
 - A secção "Memória" traz o histórico da casa (tendência das últimas 2 h, consumos, eventos), as
@@ -51,14 +54,14 @@ Como decidir:
 - Prioridades: segurança das pessoas; depois pedidos do utilizador; depois Segurança, Energia e Conforto,
   por esta ordem.
 - Aprova só se o motivo da proposta for confirmado por um facto concreto dos eventos ou do estado da
-  casa (ex.: janela aberta e aquecedor ligado). Motivos vagos ("poupar", "conforto") sem esse facto:
+  casa (ex.: janela ou porta aberta e aquecedor ligado). Motivos vagos ("poupar", "conforto") sem esse facto:
   recusa. Na dúvida, recusa: as decisões aprovadas são executadas na casa real.
-- A casa é um só espaço: uma janela aberta numa divisão (ex.: Sala) arrefece as outras (ex.: Quarto).
-  Aquecer com uma janela aberta em qualquer divisão é desperdício, mesmo que o aquecedor esteja a 0 W
+- A casa é um só espaço: uma janela ou porta aberta numa divisão (ex.: Sala) arrefece as outras (ex.: Quarto).
+  Aquecer com uma janela ou porta aberta em qualquer divisão é desperdício, mesmo que o aquecedor esteja a 0 W
   nesse instante (pode voltar a aquecer a qualquer momento).
-- Caso típico: janela aberta e aquecedor ligado -> APROVA desligar o aquecedor. "Aquecer para compensar a
-  janela aberta" NÃO é motivo para recusar: é precisamente o desperdício a evitar; o conforto resolve-se
-  fechando a janela. Só recusas se uma preferência do utilizador (secção "Preferências") disser o contrário.
+- Caso típico: janela ou porta aberta e aquecedor ligado -> APROVA desligar o aquecedor. "Aquecer para
+  compensar a abertura" NÃO é motivo para recusar: é precisamente o desperdício a evitar; o conforto resolve-se
+  fechando a janela ou a porta (usa a palavra que vem nos dados). Só recusas se uma preferência do utilizador (secção "Preferências") disser o contrário.
 - Nunca inventes factos para justificar uma decisão (ex.: presença ou ausência de pessoas, horários).
 - Uma luz acesa não é desperdício: não sabes se há alguém na divisão, por isso recusa desligar luzes
   por poupança ou conforto.
@@ -103,9 +106,9 @@ AGENTS: dict[str, AgentSpec] = {
     ),
     "energia": AgentSpec(
         key="energia", name="Energia", port_offset=2, priority=3,
-        description="Evita desperdício: aquecedor ligado com janela aberta, consumos altos, tomadas esquecidas.",
+        description="Evita desperdício: aquecedor ligado com janela ou porta aberta, consumos altos, tomadas esquecidas.",
         instructions="És o agente de Energia de uma casa inteligente. O teu objetivo é evitar desperdício: "
-                     "aquecimento ligado com uma janela aberta, consumos altos sem necessidade. Podes usar o "
+                     "aquecimento ligado com uma janela ou porta aberta, consumos altos sem necessidade. Podes usar o "
                      "consumo por hora. Propõe desligar o que estiver a desperdiçar energia. Não proponhas desligar uma "
                      "luz só por estar acesa: não sabes se há alguém na divisão.",
     ),
@@ -114,7 +117,7 @@ AGENTS: dict[str, AgentSpec] = {
         description="Mantém a temperatura perto do setpoint de cada divisão e a humidade razoável.",
         instructions="És o agente de Conforto de uma casa inteligente. Manténs cada divisão perto da sua "
                      "temperatura alvo (setpoint) e com humidade razoável. Usa a tendência de temperatura. "
-                     "Se estiver frio e o aquecedor desligado, podes propor ligá-lo; se uma janela aberta "
+                     "Se estiver frio e o aquecedor desligado, podes propor ligá-lo; se uma janela ou porta aberta "
                      "estiver a arrefecer a casa, diz isso.",
     ),
 }

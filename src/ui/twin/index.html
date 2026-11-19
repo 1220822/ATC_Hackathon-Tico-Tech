@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gémeo digital da casa</title>
+<title>Casa em 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
 <link rel="stylesheet" href="/twin/ui/twin.css">
 <link rel="stylesheet" href="/chat/ui/chat.css">
 <script type="importmap">
@@ -17,22 +20,39 @@
 </head>
 <body>
 <header id="topo">
-  <h1 id="casa">Gémeo digital</h1>
-  <span class="badge" id="modo">—</span>
-  <span class="badge" id="seguranca">—</span>
-  <span class="badge alarme" id="alarme" hidden>EM ALARME</span>
-  <span id="agentes" class="agentes" title="Agentes LLM ligados por A2A"></span>
+  <div class="marca">
+    <h1 id="casa">Casa em 3D</h1>
+    <span class="marca-sub" id="casa-nome"></span>
+  </div>
+  <div class="estado-casa">
+    <span class="seguranca" id="seguranca" title="Modo de segurança da central">—</span>
+    <span class="modo" id="modo">—</span>
+  </div>
+  <div class="grupo-agentes">
+    <span class="grupo-rotulo">Agentes</span>
+    <span id="agentes" class="agentes" title="Agentes LLM ligados por A2A"></span>
+  </div>
   <span class="espaco"></span>
-  <button type="button" id="editar-3d" title="Arrastar divisões e dispositivos">Ajustar 3D</button>
-  <button type="button" id="ver-casa" title="Voltar à vista da casa toda">Ver casa toda</button>
   <span class="ligacao" id="ligacao"><span class="ponto"></span><span id="ligacao-texto">a ligar…</span></span>
 </header>
+<div id="alarme" class="faixa-alarme" role="alert" hidden>
+  <span class="alarme-icone" aria-hidden="true">!</span>
+  <div class="alarme-texto">
+    <strong id="alarme-titulo">A casa está em alarme</strong>
+    <span id="alarme-sub"></span>
+  </div>
+  <button type="button" id="alarme-desligar">Desligar alarme</button>
+</div>
 <div id="avisos" hidden></div>
 <main id="principal">
   <div id="cena" aria-label="Vista 3D da casa">
+    <div class="cena-ferramentas">
+      <button type="button" id="ver-casa" title="Voltar à vista da casa toda">Ver casa toda</button>
+      <button type="button" id="editar-3d" title="Arrastar divisões e dispositivos">Ajustar 3D</button>
+    </div>
     <div id="edicao" hidden>
       <span><b>Modo de edição</b> · arrasta as divisões e os dispositivos</span>
-      <button type="button" id="ed-gravar">Gravar</button>
+      <button type="button" id="ed-gravar" class="primario">Gravar</button>
       <button type="button" id="ed-desfazer">Desfazer última</button>
       <button type="button" id="ed-cancelar">Cancelar</button>
     </div>
@@ -44,15 +64,19 @@
           <h2 id="painel-titulo"></h2>
           <div class="sub" id="painel-sub"></div>
         </div>
-        <button type="button" id="painel-fechar" title="Fechar">×</button>
+        <button type="button" id="painel-fechar" title="Fechar" aria-label="Fechar">×</button>
       </div>
       <div id="painel-estado"></div>
       <dl id="painel-valores"></dl>
       <div id="painel-grafico"></div>
+      <div id="painel-camara"></div>
       <div id="painel-acoes"></div>
     </section>
     <section id="linha">
-      <h2>Linha do tempo dos agentes</h2>
+      <div class="linha-topo">
+        <h2>Linha do tempo</h2>
+        <div class="filtros" id="linha-filtros" role="group" aria-label="Filtrar por agente"></div>
+      </div>
       <ol id="linha-lista"><li class="vazio">Sem eventos ainda.</li></ol>
     </section>
   </aside>
@@ -61,7 +85,8 @@
 <script type="module" src="/twin/ui/twin.js"></script>
 <script type="module">
 import { mountChat } from "/chat/ui/chat.js";
-mountChat(document.getElementById("chat"), { compact: false });
+const chat = mountChat(document.getElementById("chat"), { compact: false });
+window.addEventListener("tt:chat-send", (e) => chat.send(e.detail));
 </script>
 <script type="module" src="/chat/ui/knowledge.js"></script>
 </body>

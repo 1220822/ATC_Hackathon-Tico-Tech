@@ -907,7 +907,7 @@ class TestVisionIntegration(unittest.TestCase):
                 prompt = clients["seguranca"].prompts[0]
                 self.assertIn("camera_analysis", prompt)
                 self.assertIn("pessoas=1", prompt)
-                self.assertIn("janela_aberta=sim", prompt)
+                self.assertIn("janela_ou_porta_aberta=sim", prompt)
                 self.assertIn("Uma pessoa junto à janela aberta.", prompt)
             finally:
                 br.stop()
@@ -1103,3 +1103,57 @@ class TestVisionIntegration(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class TestLiveRtsp(unittest.TestCase):
+    """A lost h264 packet (one failed read) must not drop the RTSP connection."""
+
+    def test_isolated_read_failure_keeps_the_connection(self):
+        import threading
+        import time as _time
+        from src.vision import capture as cap_mod
+
+        opened = []
+        done = threading.Event()
+
+        class FakeCap:
+            def __init__(self, *a):
+                opened.append(1)
+                self.reads = iter([(True, "f1"), (False, None), (True, "smeared"), (True, "f2")])
+
+            def isOpened(self):
+                return True
+
+            def read(self):
+                try:
+                    return next(self.reads)
+                except StopIteration:
+                    done.set()
+                    _time.sleep(0.05)
+                    return True, "f2"
+
+            def release(self):
+                pass
+
+        class FakeCv2:
+            CAP_FFMPEG = 0
+            VideoCapture = FakeCap
+
+        src = cap_mod.LiveRtspFrameSource("rtsp://x/y")
+        src.GRACE_S = 0.0  # the first frame is usable; the grace after the failure is tested below
+        seen = []
+        with patch.object(cap_mod, "_import_cv2", return_value=FakeCv2):
+            orig_wait = src._stop.wait
+            src._stop.wait = lambda t=None: orig_wait(0)  # no real sleeping in the test
+            src.start()
+            self.assertTrue(done.wait(5))
+            seen.append(src._frame)
+            src.stop()
+        self.assertEqual(len(opened), 1)  # never reconnected
+        self.assertEqual(src.read_failures, 1)
+        self.assertEqual(seen, ["f2"])
+
+    def test_frames_right_after_a_failure_are_skipped(self):
+        from src.vision import capture as cap_mod
+        self.assertGreater(cap_mod.LiveRtspFrameSource.GRACE_S, 0)
+        self.assertGreater(cap_mod.LiveRtspFrameSource.STALL_S, cap_mod.LiveRtspFrameSource.GRACE_S)

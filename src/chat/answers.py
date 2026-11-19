@@ -44,15 +44,16 @@ def answer_state(topic: str, period: str, room: str | None, state: HomeState, me
     if topic == "janela":
         devs = _rooms(state, room, "contact")
         if not devs:
-            return "Não há nenhum sensor de janela na casa."
+            return "Não há nenhum sensor de contacto (janela ou porta) na casa."
         parts = []
         for d in devs:
+            noun = d.opening_noun
             if not d.online:
-                parts.append(f"O sensor da janela {de(d.room_name)} não comunica, não sei.")
+                parts.append(f"O sensor da {noun} {de(d.room_name)} não comunica, não sei.")
                 continue
             opened = d.caps.get("sensorState") == "alarm"
             since = _since(mem, d.id, ("contact_opened",) if opened else ("contact_closed",))
-            parts.append(f"A janela {de(d.room_name)} está {'aberta' if opened else 'fechada'}{since}.")
+            parts.append(f"A {noun} {de(d.room_name)} está {'aberta' if opened else 'fechada'}{since}.")
         if any(d.caps.get("sensorState") == "alarm" for d in devs) and state.plugs_on():
             plug = state.plugs_on()[0]
             parts.append(f"Atenção: o aquecedor {de(plug.room_name)} está ligado.")
@@ -150,8 +151,9 @@ def answer_state(topic: str, period: str, room: str | None, state: HomeState, me
             bits.append(f"{fmt(s['temperatura_c'])} °C")
         if s.get("humidade_pct") is not None:
             bits.append(f"{fmt(s['humidade_pct'], 0)} % de humidade")
-        if "janela_aberta" in s:
-            bits.append("janela aberta" if s["janela_aberta"] else "janela fechada")
+        for noun in ("janela", "porta"):
+            if f"{noun}_aberta" in s:
+                bits.append(f"{noun} {'aberta' if s[f'{noun}_aberta'] else 'fechada'}")
         if "aquecedor_ligado" in s:
             bits.append("aquecedor ligado" if s["aquecedor_ligado"] else "aquecedor desligado")
         if bits:
