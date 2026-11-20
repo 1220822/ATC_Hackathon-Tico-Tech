@@ -9,7 +9,6 @@ change room, and nothing is written to the MCP.
 
 import json
 import re
-from pathlib import Path
 
 from pydantic import ValidationError
 

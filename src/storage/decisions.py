@@ -15,7 +15,7 @@ category:       energia | conforto | seguranca | luz | emergencia | utilizador
 
 import time
 import uuid
-from typing import Any, Literal
+from typing import Literal
 
 from .db import SqliteStore, dumps, loads
 
@@ -161,7 +161,3 @@ def map_status(pt_status: str) -> Status:
     """Status of the timeline Decision (PT) -> decisions.status."""
     return {"executada": "executed", "dry-run": "dry_run", "rejeitada": "rejected", "erro": "rejected",
             "aprovada": "executed"}.get(pt_status, "rejected")
-
-
-def describe(d: dict[str, Any]) -> str:
-    return f"{time.strftime('%d/%m %H:%M', time.localtime(d['ts']))} {d.get('explanation') or ''}".strip()
