@@ -73,9 +73,6 @@ class PrefStore(SqliteStore):
         self.execute("UPDATE preferences SET active = 0 WHERE id = ?", (pref_id,))
         return self.get(pref_id)
 
-    def set_scenario(self, pref_id: str, scenario_id: str | None) -> None:
-        self.execute("UPDATE preferences SET mcp_scenario_id = ? WHERE id = ?", (scenario_id, pref_id))
-
     def erase_all(self) -> int:
         """RGPD: the user asked to delete everything the house knows about them."""
         return self.execute("DELETE FROM preferences")
