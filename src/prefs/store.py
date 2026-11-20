@@ -23,6 +23,9 @@ SOURCES = ("explicit", "learned_confirmed")
 
 
 class PrefStore(SqliteStore):
+    # optional (scope, key, value) -> id: the scenario mode reproduces the ids seen in the recordings
+    id_factory = None
+
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS preferences (
         id TEXT PRIMARY KEY, ts REAL NOT NULL, scope TEXT NOT NULL, key TEXT NOT NULL,
@@ -48,7 +51,7 @@ class PrefStore(SqliteStore):
         value = validate_value(key, value)
         if source not in SOURCES:
             raise ValueError(f"source inválido: {source}")
-        new_id = uuid.uuid4().hex[:12]
+        new_id = (self.id_factory(scope, key, value) if self.id_factory else None) or uuid.uuid4().hex[:12]
         ts = time.time() if now is None else now
         ident = identity(scope, key, value)
         with self.connect() as db:

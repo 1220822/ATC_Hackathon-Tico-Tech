@@ -254,7 +254,7 @@ class HomeState(BaseModel):
 
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
-    ts: float = Field(default_factory=time.time)
+    ts: float = Field(default_factory=lambda: time.time())  # late-bound: a simulated clock applies
     type: EventType
     severity: Severity = "info"
     device_id: str | None = None

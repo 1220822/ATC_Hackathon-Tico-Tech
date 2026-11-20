@@ -44,7 +44,7 @@ class Decision(BaseModel):
     """A proposal or decision of an agent / the Coordinator, shown in the UI timeline.
     The Coordinator (not in the repo yet) records them with SharedMemory.add_decision()."""
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
-    ts: float = Field(default_factory=time.time)
+    ts: float = Field(default_factory=lambda: time.time())  # late-bound: a simulated clock applies
     agent: str  # Coordenador | Energia | Conforto | Segurança | Emergência
     message: str  # PT-PT, e.g. "janela aberta com o aquecedor ligado: proponho desligar"
     device_id: str | None = None
@@ -74,6 +74,9 @@ class SharedMemory:
         # the hub keeps reporting isAlarmed for a while. Holds the key of the newest alarm entry then
         # ("" if there was none); a newer alarm entry is a new alarm.
         self._silenced_alarm: str | None = None
+        # optional hook called with every event / decision before it is stored (the scenario mode uses it
+        # to give scripted items the time of the recording); None in normal runs
+        self.on_record: Callable[[Any], None] | None = None
 
     def silence_alarm(self, key: str | None) -> None:
         with self._lock:
@@ -101,14 +104,34 @@ class SharedMemory:
     def add_events(self, events: Iterable[Event]) -> None:
         with self._lock:
             for e in events:
+                if self.on_record is not None:
+                    self.on_record(e)
                 self._seq += 1
                 self._events.append((self._seq, e))
 
     def add_decision(self, decision: Decision) -> Decision:
+        if self.on_record is not None:
+            self.on_record(decision)
         with self._lock:
             self._seq += 1
             self._decisions.append((self._seq, decision))
         return decision
+
+    def touch(self) -> None:
+        """Something shown in the 3D changed outside the house state (e.g. an agent started thinking):
+        bump the version so the SSE stream sends a fresh state."""
+        with self._lock:
+            self._version += 1
+
+    def clear_history(self) -> None:
+        """Forget the recent events, decisions, camera analyses and the silenced alarm (scenario reset)."""
+        with self._lock:
+            self._events.clear()
+            self._decisions.clear()
+            self._vision_by_room.clear()
+            self._latest_vision = None
+            self._silenced_alarm = None
+            self._version += 1
 
     @property
     def state(self) -> HomeState | None:

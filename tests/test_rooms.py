@@ -63,7 +63,8 @@ class RoomsTestCase(unittest.TestCase):
 class TestHomeConfig(unittest.TestCase):
     def test_repo_config_is_valid(self):
         cfg = load_home_config(ROOT / "config" / "home.json")
-        self.assertIn("sim-cozinha", cfg.sim_room_ids)
+        self.assertEqual(cfg.sim_room_ids, [])  # the house as it is in the 3D: Sala and Quarto only
+        self.assertIn("Quarto", cfg.rooms)
 
     def test_missing_file_is_empty(self):
         self.assertEqual(load_home_config(ROOT / "nao-existe.json"), HomeConfig())

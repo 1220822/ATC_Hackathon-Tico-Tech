@@ -21,7 +21,7 @@ class VisionObservation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
-    ts: float = Field(default_factory=time.time)
+    ts: float = Field(default_factory=lambda: time.time())  # late-bound: a simulated clock applies
     room_id: str | None = None
     room_name: str = ""
     camera_id: str | None = None

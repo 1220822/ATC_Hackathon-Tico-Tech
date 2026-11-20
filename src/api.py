@@ -4,6 +4,8 @@ SQLite history. It never writes to the MCP.
     python -m src.api                 # SIMULATE from .env (false -> real MCP + simulated rooms)
     python -m src.api --sim           # everything simulated
     python -m src.api --port 8000 --host 127.0.0.1
+    python -m src.api --cenarios      # scenario mode of the pitch videos (src/cenarios): no real house,
+                                      # no real MCP, no LLM; own database var/cenarios/sim.db
 
 Endpoints (rooms by id or name):
     GET /                                                     UI: one card per room
@@ -120,7 +122,8 @@ def room_view(st: HomeState, r: RoomState) -> dict:
 
 
 def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinator | None = None,
-               vision_worker=None, chat=None) -> FastAPI:
+               vision_worker=None, chat=None, twin_extra_html: str = "") -> FastAPI:
+    """twin_extra_html: markup added at the end of /twin (the scenario mode adds its director panel)."""
     app = FastAPI(title="Tico&Tech: casa por divisões", version="1.0")
     coordinator = coordinator or Coordinator(memory, settings)
     History(settings.history_db)  # make sure the file and schema exist
@@ -209,7 +212,7 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
         reusing an old twin.js / chat.js from its cache."""
         response = await call_next(request)
         path = request.url.path
-        if path in ("/", "/twin", "/conhecimento") or path.startswith(("/twin/ui/", "/chat/ui/", "/static/app/")):
+        if path in ("/", "/twin", "/conhecimento", "/simulador") or path.startswith(("/twin/ui/", "/chat/ui/", "/static/app/")):
             response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -222,9 +225,19 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
         """"O que a casa sabe de ti": a page of its own (it was a modal)."""
         return (UI_DIR / "knowledge.html").read_text(encoding="utf-8")
 
+    # simulated sensors and demo scenarios from the browser (scripts/simulate.py without a terminal);
+    # a page of its own, out of the navigation, so it can be driven in a tab that is not being recorded
+    from .sim.control import add_sim_routes
+    add_sim_routes(app, settings)
+
+    @app.get("/simulador", response_class=HTMLResponse, include_in_schema=False)
+    def simulator_page():
+        return (UI_DIR / "simulador.html").read_text(encoding="utf-8")
+
     @app.get("/twin", response_class=HTMLResponse, include_in_schema=False)
     def twin_page():
-        return (UI_DIR / "twin" / "index.html").read_text(encoding="utf-8")
+        html = (UI_DIR / "twin" / "index.html").read_text(encoding="utf-8")
+        return html.replace("</body>", twin_extra_html + "</body>") if twin_extra_html else html
 
     @app.get("/twin/state")
     def get_twin_state(n: int = Query(30, ge=0, le=500)):
@@ -484,6 +497,10 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
 
 
 def main() -> None:
+    if "--cenarios" in sys.argv[1:]:  # scenario mode: its own wiring (mock MCP, fixtures, simulated clock)
+        from .cenarios.__main__ import main as cenarios_main
+        cenarios_main([x for x in sys.argv[1:] if x != "--cenarios"])
+        return
     p = argparse.ArgumentParser(description="API e UI por divisão")
     p.add_argument("--sim", action="store_true", help="tudo simulado (SIMULATE=true)")
     p.add_argument("--host", default="127.0.0.1")

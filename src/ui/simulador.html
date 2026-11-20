@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulador · Tico&amp;Tech</title>
+<meta name="description" content="Muda os sensores simulados e corre cenários de demonstração sem tocar em nenhum sensor físico.">
+<meta name="theme-color" content="#f2f0eb">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/app/theme.css">
+<link rel="stylesheet" href="/static/app/overview.css">
+<link rel="stylesheet" href="/static/app/simulador.css">
+</head>
+<body class="sim-page">
+<a class="skip" href="#main">Saltar para o conteúdo</a>
+<header class="shell">
+  <a class="brand" href="/" aria-label="Tico&amp;Tech, visão geral"><span class="wordmark" translate="no">Tico<span class="amp">&amp;</span>Tech</span></a>
+  <span class="home" id="home-name"></span>
+  <nav class="nav" aria-label="Secções">
+    <a href="/">Visão geral</a>
+    <a href="/twin">Casa 3D</a>
+    <a href="/conhecimento">O que a casa sabe</a>
+  </nav>
+  <div class="shell-status">
+    <a class="st st-agents" id="agents" href="/#act-h">Agentes</a>
+    <span class="st" id="sec">…</span>
+    <span class="st st-mode" id="mode" hidden></span>
+    <span class="conn" id="conn"><span class="dot" aria-hidden="true"></span><span id="conn-text">a ligar…</span></span>
+  </div>
+  <button type="button" class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="menu">Menu</button>
+</header>
+<div class="menu" id="menu" hidden>
+  <nav class="menu-nav" aria-label="Secções">
+    <a href="/">Visão geral</a>
+    <a href="/twin">Casa 3D</a>
+    <a href="/conhecimento">O que a casa sabe</a>
+  </nav>
+  <dl class="menu-state" id="menu-state"></dl>
+</div>
+<div class="alarm-band" id="alarm" role="alert" hidden>
+  <svg data-icon="alert"></svg>
+  <div class="grow"><strong id="alarm-title">A casa está em alarme</strong><span id="alarm-sub"></span></div>
+  <button type="button" class="btn" id="alarm-off">Desligar alarme</button>
+</div>
+
+<main id="main" class="ov sim">
+  <section class="sim-intro" aria-labelledby="sim-h1">
+    <h1 id="sim-h1">Simulador</h1>
+    <p class="sim-lede">Muda os sensores simulados e corre cenários de demonstração, sem tocar em nenhum sensor físico.
+      Abre a app noutro separador para ver a casa a reagir: esta página não aparece na navegação.</p>
+    <div class="sim-open">
+      <a class="btn" href="/" target="_blank" rel="noopener">Abrir a visão geral noutro separador</a>
+      <a class="btn" href="/twin" target="_blank" rel="noopener">Abrir a Casa 3D noutro separador</a>
+    </div>
+    <p class="sim-scope" id="sim-scope"></p>
+    <div id="sim-erro" class="ov-error" role="alert" hidden></div>
+  </section>
+
+  <section class="block" id="cenarios" aria-labelledby="cen-h">
+    <header class="block-head">
+      <h2 id="cen-h">Cenários</h2>
+      <span class="muted">Sequências com tempo: cada passo aparece no registo em baixo</span>
+    </header>
+    <div class="sim-running" id="sim-running" role="status" aria-live="polite" hidden>
+      <span class="sim-pulse" aria-hidden="true"></span>
+      <span id="sim-running-text"></span>
+      <button type="button" class="btn sm" id="sim-parar">Parar cenário</button>
+    </div>
+    <div class="sim-scen" id="sim-scen"><p class="sim-empty">A ler o simulador…</p></div>
+  </section>
+
+  <section class="block" id="divisoes" aria-labelledby="div-h">
+    <header class="block-head">
+      <h2 id="div-h">Sensores por divisão</h2>
+      <span class="muted">Cada botão muda um sensor de uma vez; a app lê-o em 1 ou 2 segundos</span>
+    </header>
+    <div class="sim-rooms" id="sim-rooms"></div>
+  </section>
+
+  <section class="block" id="casa" aria-labelledby="casa-h" hidden>
+    <header class="block-head"><h2 id="casa-h">Segurança e alarme</h2><span class="muted" id="sim-sec"></span></header>
+    <div class="sim-row-actions">
+      <button type="button" class="btn" data-acao="armar" data-valor="away">Armar a casa (ausente)</button>
+      <button type="button" class="btn" data-acao="armar" data-valor="stay">Armar a casa (em casa)</button>
+      <button type="button" class="btn" data-acao="armar" data-valor="disarm">Desarmar a casa</button>
+      <button type="button" class="btn" data-acao="cancelar_alarme">Cancelar o alarme</button>
+    </div>
+  </section>
+
+  <section class="block" id="registo" aria-labelledby="reg-h">
+    <header class="block-head">
+      <h2 id="reg-h">Registo</h2>
+      <button type="button" class="btn sm quiet sim-reset" id="sim-repor">Repor o simulador</button>
+    </header>
+    <ol class="sim-log" id="sim-log" aria-live="polite"></ol>
+  </section>
+</main>
+<script type="module" src="/static/app/simulador.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 """Inject events into the simulated home. Run the app/perception in another terminal; both share
 var/sim_home.json. With SIMULATE=true every room is simulated; with SIMULATE=false only the
-simulated rooms of config/home.json (e.g. Cozinha) are read from here.
+simulated rooms of config/home.json (none at the moment) are read from here.
 
     python scripts/simulate.py reset                 # back to the seed (everything normal)
     python scripts/simulate.py show                  # print the simulated state
@@ -14,7 +14,7 @@ simulated rooms of config/home.json (e.g. Cozinha) are read from here.
     python scripts/simulate.py plug on|off [--w 1500]
     python scripts/simulate.py offline|online light  # device type: light, plug, contact, ...
 
---room <id|nome> picks the room (e.g. --room cozinha, --room sim-cozinha, --room Quarto).
+--room <id|nome> picks the room (e.g. --room sala, --room Quarto).
 By default each command uses the first room that has the device type it needs.
 
 Demo scenarios (timed sequences, --step seconds between steps, default 4):
@@ -22,7 +22,9 @@ Demo scenarios (timed sequences, --step seconds between steps, default 4):
     python scripts/simulate.py cenario fumo          # 2. smoke
     python scripts/simulate.py cenario objetivo      # 3. preconditions for the NL goal
     python scripts/simulate.py cenario intrusao      # 4. armed + contact open
-With --room, every sensor of the scenario is taken from that room (e.g. cenario janela --room cozinha).
+Without --room each sensor comes from the first room that has it (janela: Sala window, Quarto heater).
+With --room, every sensor of the scenario is taken from that room.
+The same scenarios run from the browser at http://127.0.0.1:8000/simulador (src/sim/scenarios.py).
 """
 
 import argparse
@@ -37,49 +39,12 @@ from src.config import get_settings  # noqa: E402
 from src.home_config import load_home_config  # noqa: E402
 from src.perception.sources import SimSource  # noqa: E402
 from src.perception.state import normalize  # noqa: E402
-from src.sim.home import TYPE_BY_ROLE, SimHome  # noqa: E402
+from src.sim.home import TYPE_BY_ROLE  # noqa: E402
+from src.sim.scenarios import run_scenario  # noqa: E402
 
 
 def say(msg: str) -> None:
     print(f"{time.strftime('%H:%M:%S')}  {msg}", flush=True)
-
-
-def scenario(home: SimHome, name: str, step: float, room: str | None) -> None:
-    if name == "janela":
-        say("Pré-condições: janela fechada, 21.5 °C, aquecedor ligado")
-        home.set_contact(False, room)
-        home.set_temperature(21.5, room)
-        home.set_plug(True, room=room)
-        time.sleep(step)
-        c = home.set_contact(True, room)
-        say(f"Janela ABERTA ({c['roomName']})")
-        t = 21.5
-        for _ in range(6):
-            time.sleep(step)
-            t -= 0.2
-            dev = home.set_temperature(t, room)
-            say(f"Temperatura {t:.1f} °C ({dev['roomName']})")
-    elif name == "fumo":
-        say("Botão de teste do detetor de fumo premido")
-        home.smoke(room)
-    elif name == "objetivo":
-        say("Pré-condições: 19.0 °C, aquecedor desligado, janela fechada")
-        home.set_contact(False, room)
-        home.set_plug(False, room=room)
-        home.set_temperature(19.0, room)
-        say('Agora envia o objetivo, ex.: "quero o quarto a 21 °C a gastar pouco esta noite"')
-    elif name == "intrusao":
-        say("Casa armada (AWAY) [simulado]")
-        home.set_contact(False, room)
-        home.set_security("away")
-        time.sleep(step)
-        say("Contacto ABERTO com a casa armada")
-        home.set_contact(True, room)
-        time.sleep(step / 2)
-        say("Movimento na câmara")
-        home.camera(motion=True)
-    else:
-        raise SystemExit(f"cenário desconhecido: {name}")
 
 
 def main() -> None:
@@ -129,7 +94,7 @@ def main() -> None:
         elif cmd in ("offline", "online"):
             dev = home.set_device_online(TYPE_BY_ROLE[a.arg], cmd == "online", room)
         elif cmd == "cenario":
-            scenario(home, a.arg, a.step, room)
+            run_scenario(home, a.arg, a.step, room, say=say)
             return
         else:
             raise SystemExit(__doc__)

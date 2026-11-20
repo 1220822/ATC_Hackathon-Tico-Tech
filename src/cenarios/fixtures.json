@@ -1,0 +1,134 @@
+{
+  "_notas": "Respostas fixas do modo de cenários (python -m src.api --cenarios). Os textos são os das gravações do pitch. 'marcas': texto exato de um evento, decisão ou mensagem do chat -> hora da gravação (o relógio simulado salta para essa hora quando o texto aparece). 'agentes': respostas dos agentes LLM, por ordem, cada uma para o primeiro lote de eventos que tiver um evento do tipo 'evento' (e, se dado, com a mensagem 'mensagem' ou que contenha 'contem'). 'coordenador': veredictos do Coordenador LLM, por ordem. 'atraso_s': quanto tempo o agente fica 'a pensar'.",
+  "cenarios": {
+    "1": {
+      "titulo": "Regra criada a conversar",
+      "slide": "2 · Configura a conversar",
+      "inicio": "16:30:00",
+      "marcas": [
+        ["Regra TT_porta_aberta_aquecedor_ligado: Cenário criado no MCP.", "16:30:40"]
+      ]
+    },
+    "2": {
+      "titulo": "Limite de autonomia",
+      "slide": "2 · Configura a conversar",
+      "inicio": "16:38:00",
+      "marcas": []
+    },
+    "3": {
+      "titulo": "Conflito decidido contigo",
+      "slide": "3 · Decide contigo",
+      "inicio": "16:44:20",
+      "marcas": [
+        ["Aquecedor (tomada) do Quarto ligado.", "16:44:23"],
+        ["Aquecedor do Quarto ligado a 7 W com a temperatura já a 22,8 °C, acima do setpoint de 21,0 °C; sem janela nem porta aberta. Proponho desligar a tomada do Quarto.", "16:44:36"],
+        ["Proposta da Energia: desligar a tomada do Quarto. À espera da tua aprovação no chat.", "16:44:51"],
+        ["Porta da Sala aberta.", "16:45:42"],
+        ["Porta da Sala aberta com aquecedor do Quarto ligado e temperatura (22.8 °C) acima do setpoint (21.0 °C); a regra de aviso âmbar aplica-se, mas a autonomia impede acender a luz, pelo que apenas informo. Proponho desligar a tomada do Quarto.", "16:46:27"],
+        ["Proposta da Energia: desligar a tomada do Quarto. À espera da tua aprovação no chat.", "16:46:34"],
+        ["Aprovado por ti: desligar a tomada do Quarto. Feito.", "16:46:52"],
+        ["Aquecedor (tomada) do Quarto desligado.", "16:46:58"]
+      ],
+      "agentes": [
+        {
+          "agente": "energia", "evento": "plug_switched", "mensagem": "Aquecedor (tomada) do Quarto ligado.", "atraso_s": 2.5,
+          "resposta": {
+            "resumo": "Aquecedor do Quarto ligado a 7 W com a temperatura já a 22,8 °C, acima do setpoint de 21,0 °C; sem janela nem porta aberta",
+            "propostas": [{"device_id": "a82edb80-d92f-44bb-8df0-8e10beeea621", "acao": "off",
+                           "motivo": "Quarto a 22,8 °C, acima do setpoint de 21,0 °C; aquecedor a gastar 7 W sem necessidade"}]
+          }
+        },
+        {
+          "agente": "energia", "evento": "contact_opened", "atraso_s": 2.5,
+          "resposta": {
+            "resumo": "Porta da Sala aberta com aquecedor do Quarto ligado e temperatura (22.8 °C) acima do setpoint (21.0 °C); a regra de aviso âmbar aplica-se, mas a autonomia impede acender a luz, pelo que apenas informo",
+            "propostas": [{"device_id": "a82edb80-d92f-44bb-8df0-8e10beeea621", "acao": "off",
+                           "motivo": "Temperatura do Quarto (22.8 °C) já acima do setpoint (21.0 °C); manter o aquecedor a 7 W é desperdício"}]
+          }
+        }
+      ],
+      "coordenador": [
+        {
+          "atraso_s": 2.0,
+          "resposta": {"resumo": "", "decisoes": [{"n": 1, "aprovar": true,
+            "motivo": "Quarto a 22,8 °C, acima do setpoint de 21,0 °C; aquecedor a consumir 7 W sem necessidade e sem janela nem porta aberta"}]}
+        },
+        {
+          "atraso_s": 2.0,
+          "resposta": {"resumo": "", "decisoes": [{"n": 1, "aprovar": true,
+            "motivo": "Porta da Sala aberta e aquecedor do Quarto ligado a 7 W com temperatura (22,8 °C) acima do setpoint (21,0 °C); aquecer com porta aberta é desperdício"}]}
+        }
+      ]
+    },
+    "4": {
+      "titulo": "Segurança acima de tudo",
+      "slide": "4 · Segurança acima de tudo",
+      "inicio": "17:19:50",
+      "marcas": [
+        ["Vou armar a casa (modo ausente). Confirmas? (Se ficares em casa: «arma em modo casa».)", "17:20:00"],
+        ["Segurança: desarmada → armada (ausente).", "17:20:08"],
+        ["A casa está em alarme!", "17:20:23"],
+        ["Porta da Sala aberta.", "17:20:23"],
+        ["Análise visual da Sala: 2 pessoas detetadas (98%).", "17:20:26"],
+        ["Intrusão na Sala (pessoa vista na câmara com a casa armada (ausente)): luz a vermelho no máximo (regra fixa, sem LLM). Feito.", "17:20:27"],
+        ["A luz do Quarto mudou de estado.", "17:20:31"],
+        ["Porta da Sala aberta com a casa em alarme AWAY; risco de intrusão, mas não proponho acender luz por preferência do utilizador (23113697957b).", "17:20:41"],
+        ["Alarme real: casa armada, porta da Sala aberta e duas pessoas detetadas na Sala com 98% de confiança; não proponho ação sobre luzes por preferência ativa (23113697957b).", "17:20:55"],
+        ["Vou desarmar a casa e desligar o alarme. Confirmas?", "17:21:20"],
+        ["Desarmada por ti: luz reposta como estava antes da intrusão. Feito.", "17:21:30"],
+        ["Segurança: armada (ausente) → desarmada.", "17:21:31"],
+        ["A luz do Quarto mudou de estado.", "17:21:31"],
+        ["Alarme ativo na Sala, mas a câmara detetou 2 pessoas (98%), a porta da Sala está aberta e a segurança foi desarmada, o que indica que os residentes regressaram a casa; não há indícios de intrusão.", "17:21:44"]
+      ],
+      "agentes": [
+        {
+          "agente": "seguranca", "evento": "contact_opened", "atraso_s": 6.0,
+          "resposta": {"resumo": "Porta da Sala aberta com a casa em alarme AWAY; risco de intrusão, mas não proponho acender luz por preferência do utilizador (23113697957b)", "propostas": []}
+        },
+        {
+          "agente": "seguranca", "evento": "camera_analysis", "atraso_s": 4.0,
+          "resposta": {"resumo": "Alarme real: casa armada, porta da Sala aberta e duas pessoas detetadas na Sala com 98% de confiança; não proponho ação sobre luzes por preferência ativa (23113697957b)", "propostas": []}
+        },
+        {
+          "agente": "seguranca", "evento": "security_mode_changed", "contem": "→ desarmada", "atraso_s": 4.0,
+          "resposta": {"resumo": "Alarme ativo na Sala, mas a câmara detetou 2 pessoas (98%), a porta da Sala está aberta e a segurança foi desarmada, o que indica que os residentes regressaram a casa; não há indícios de intrusão", "propostas": []}
+        }
+      ]
+    },
+    "5": {
+      "titulo": "Sugestão proativa com evidência",
+      "slide": "5 · Aprende, mas nunca em silêncio",
+      "inicio": "17:42:00",
+      "marcas": [
+        ["Regra TT_humi_acima_70: Cenário criado no MCP.", "17:42:57"]
+      ]
+    },
+    "6": {
+      "titulo": "O que a casa sabe de ti",
+      "slide": "6 · O que a casa sabe de ti",
+      "inicio": "17:50:00",
+      "marcas": []
+    }
+  },
+  "chat": {
+    "vou sair": {"pedidos": [{"intent": "comando_dispositivo", "comando": {"dispositivo": "seguranca", "acao": "armar_ausente"}}]}
+  },
+  "frases": [
+    {
+      "modelo_contem": "A humidade no Quarto subiu nas 3 noites que tenho registadas (+10, +10, +11 pontos).",
+      "frase": "A humidade no Quarto subiu nas 3 noites registadas (+10, +10, +11 pontos). Se tiveres um desumidificador, liga-o à tomada inteligente e eu cuido de o ativar; para já, queres que te avise quando passar de 70 %?"
+    }
+  ],
+  "legendas": {
+    "daily_pattern:humidity": "A sombreado, os períodos que contaram. Humidade alta durante a noite favorece bolor e ácaros; arejar a divisão a tempo evita-o."
+  },
+  "sugestoes_rapidas": ["A janela da sala está fechada?", "Quanto gastei ontem?", "Tens alguma sugestão?"],
+  "humidade": {
+    "_nota": "Histórico do Quarto em 3 noites (janela 22:00–07:00), uma leitura por minuto: base 56,5 %, sobe até ao pico às 04:00 e assenta em base + subida nas últimas leituras.",
+    "noites": [["2026-11-16", 10], ["2026-11-17", 10], ["2026-11-18", 11]],
+    "base_pct": 56.5,
+    "pico_extra_pct": 2.0,
+    "temperatura_c": 22.5
+  },
+  "preferencia_luz_id": "23113697957b"
+}

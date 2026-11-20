@@ -1,0 +1,37 @@
+/* Director panel (scenario mode only). Uses the /twin tokens (twin.css); floats over the 3D scene,
+   bottom left, so it stays out of the recorded chat and timeline. Hidden with «D» before recording. */
+.realizador { position: fixed; left: 16px; bottom: 16px; z-index: 50; width: 300px; max-width: calc(100vw - 32px);
+              max-height: calc(100vh - 120px); overflow: auto; padding: 10px; display: flex; flex-direction: column;
+              gap: 8px; background: color-mix(in srgb, var(--panel) 94%, transparent); color: var(--text);
+              border: 1px dashed var(--line-strong); border-radius: var(--r-md); font-size: 12px;
+              box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.realizador[hidden] { display: none; }
+.realizador.ocupado { cursor: progress; }
+.realizador.ocupado button { pointer-events: none; opacity: .6; }
+.rz-topo { display: flex; align-items: center; gap: 8px; }
+.rz-topo strong { font: 600 13px/1.2 var(--font-display); }
+.rz-hora { color: var(--muted); font-variant-numeric: tabular-nums; flex: 1; }
+.realizador button { font-size: 12px; padding: 5px 8px; text-align: left; }
+.rz-fechar { padding: 2px 8px !important; }
+.rz-cenarios { display: flex; flex-direction: column; gap: 4px; }
+.rz-cenario { display: flex; gap: 4px; }
+.rz-comecar { flex: 1; display: grid; grid-template-columns: 18px 1fr; column-gap: 6px; align-items: baseline; }
+.rz-comecar b { grid-row: span 2; font-family: var(--font-display); }
+.rz-comecar small { color: var(--muted); font-size: 11px; }
+.rz-continuar { flex: none; width: 34px; text-align: center !important; }
+.rz-cenario.ativo .rz-comecar { border-color: var(--text-2); background: var(--panel-3); }
+.rz-acoes { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+.rz-acoes button { display: flex; justify-content: space-between; gap: 8px; }
+.realizador kbd { font: 11px/1.2 var(--font-ui); color: var(--muted); border: 1px solid var(--line-strong);
+                  border-radius: 4px; padding: 0 4px; }
+.rz-perigo { color: var(--bad-text) !important; border-color: color-mix(in srgb, var(--bad) 55%, var(--line)) !important; }
+.rz-erro { color: var(--bad-text); }
+.rz-erro:empty { display: none; }
+.rz-nota { color: var(--muted); font-size: 11px; }
+/* reopen button: same corner as the panel, invisible until hovered (or focused) so it never shows in a recording */
+.rz-abrir { position: fixed; left: 16px; bottom: 16px; z-index: 50; display: flex; align-items: center; gap: 6px;
+            font-size: 12px; padding: 5px 8px; border-style: dashed; opacity: 0; transition: opacity .15s; }
+.rz-abrir:hover, .rz-abrir:focus-visible { opacity: 1; }
+.rz-abrir[hidden] { display: none; }
+.rz-abrir kbd { font: 11px/1.2 var(--font-ui); color: var(--muted); border: 1px solid var(--line-strong);
+                border-radius: 4px; padding: 0 4px; }

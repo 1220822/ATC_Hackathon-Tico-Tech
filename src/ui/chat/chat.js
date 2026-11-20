@@ -13,7 +13,7 @@ const $el = (tag, cls, text) => {
 };
 const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
 // three short starters, wrapped (never a sideways scroller); the longer demo lines are typed
-const EXAMPLES = ["A janela da sala está fechada?", "Quanto gastei ontem?", "Tens alguma sugestão?"];
+const EXAMPLES = window.TT_CHAT_EXAMPLES || ["A janela da sala está fechada?", "Quanto gastei ontem?", "Tens alguma sugestão?"];
 
 async function api(path, body) {
   const res = await fetch(path, body === undefined ? {} : {
@@ -199,7 +199,7 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
         if (answered.has(key)) break;  // answered: no dead buttons
         const btn = $el("button", /Aprovar|Confirmar|Aceitar|Está bem/.test(b.label) ? "primario" : null, b.label);
         btn.type = "button";
-        btn.addEventListener("click", () => press(b, row, key));
+        btn.addEventListener("click", () => press(b, row, key, btn));
         row.appendChild(btn);
       }
       if (m.why || m.suggestion_id) {
@@ -240,7 +240,7 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
     btn.blur();
   }
 
-  async function press(b, row, key) {
+  async function press(b, row, key, btn) {
     if (b.action === "layout_manual") { window.dispatchEvent(new CustomEvent("tt:layout-edit")); }
     let comment = null;
     if (b.ask) {
@@ -250,6 +250,9 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
     answered.add(key);
     const card = row.closest(".cartao");
     if (card) markAnswered(card, b.label);
+    const wait = $el("div", "tt-escrever", "O Coordenador está a pensar…");
+    lista.appendChild(wait);
+    lista.scrollTop = lista.scrollHeight;
     try {
       const out = await api("/chat/action", { action: b.action, id: b.id || null, response: b.response || null, comment });
       out.messages.forEach(render);
@@ -257,6 +260,8 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
       if (b.action.startsWith("layout")) window.dispatchEvent(new CustomEvent("tt:layout-changed"));
     } catch (e) {
       render({ id: `err${Date.now()}`, ts: Date.now() / 1000, role: "coordenador", text: `Erro: ${e.message}` });
+    } finally {
+      wait.remove();
     }
     lista.scrollTop = lista.scrollHeight;
   }

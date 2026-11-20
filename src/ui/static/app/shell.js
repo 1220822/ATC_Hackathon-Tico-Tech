@@ -120,7 +120,7 @@ export function renderShell(st) {
   band.hidden = !st.alarm?.any;
   measureBand();
   if (!st.alarm?.any) { alarmSince = null; return; }
-  alarmSince ??= Date.now() / 1000;
+  alarmSince ??= st.ts;  // the house's time (the server's clock), not the browser's
   const alarm = st.alarm;
   const room = alarm.smoke_room && st.rooms?.find((r) => r.id === alarm.smoke_room);
   $("alarm-title").textContent = alarm.smoke ? `Fumo detetado${room ? ` na ${room.name}` : ""}`

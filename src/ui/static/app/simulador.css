@@ -1,0 +1,59 @@
+/* Simulador: simulated sensors and demo scenarios. Built on theme.css tokens and overview.css blocks. */
+.sim { padding-top: 40px; }
+.sim-intro h1 { font-size: 40px; letter-spacing: -.035em; margin: 0; }
+.sim-lede { max-width: 62ch; margin: 10px 0 0; font-size: 17px; color: var(--ink-2); }
+.sim-open { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.sim-scope { margin: 14px 0 0; font-size: 14px; color: var(--ink-3); }
+.sim-scope:empty { display: none; }
+.sim-empty { padding: 20px 0; color: var(--ink-2); }
+
+/* scenarios */
+.sim-scen { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.sim-card { display: flex; flex-direction: column; gap: 10px; padding: 18px; background: var(--sheet);
+            border: 1px solid var(--rule); border-radius: var(--r-3); }
+.sim-card h3 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+.sim-card p { margin: 0; font-size: 14px; color: var(--ink-2); flex: 1; }
+.sim-card .sim-fields { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.sim-card.ativo { border-color: var(--signal); box-shadow: 0 0 0 1px var(--signal); }
+.sim-card .sim-why { font-size: 13px; color: var(--ink-3); }
+.sim-card .sim-onde { flex: none; font: 13px/1.5 var(--f-num); color: var(--ink-3); }
+.sim-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
+.sim-field select, .sim-field input { min-height: 38px; padding: 0 10px; font: 15px var(--f-ui); color: var(--ink);
+                                      background: #fff; border: 1px solid var(--rule-2); border-radius: var(--r-2); }
+.sim-field input { width: 96px; font-family: var(--f-num); }
+.sim-field select:focus-visible, .sim-field input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+.sim-running { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 12px 14px;
+               background: var(--signal-bg); color: var(--signal-ink); border-radius: var(--r-2); font-weight: 500; }
+.sim-running span:nth-child(2) { flex: 1; }
+.sim-pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--signal); animation: sim-pulse 1.2s ease-in-out infinite; }
+@keyframes sim-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .sim-pulse { animation: none; } }
+
+/* rooms */
+.sim-rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.sim-room { padding: 18px; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r-3); }
+.sim-room h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; font-size: 17px; }
+.sim-tag { font: 500 12px/1 var(--f-ui); padding: 4px 7px; border-radius: 999px; background: var(--sunk); color: var(--ink-2); }
+.sim-dev { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; padding: 12px 0;
+           border-top: 1px solid var(--rule); }
+.sim-dev:first-of-type { border-top: 0; }
+.sim-dev-name { font-size: 14px; font-weight: 600; }
+.sim-dev-state { font: 500 14px var(--f-num); color: var(--ink-2); text-align: right; }
+.sim-dev-state.on { color: var(--signal-ink); }
+.sim-dev-state.off-line { color: var(--bad); }
+.sim-dev .sim-row-actions { grid-column: 1 / -1; }
+.sim-row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+
+/* log */
+.sim-log { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--ink); max-width: 760px; }
+.sim-log li { display: flex; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--rule); font-size: 15px; }
+.sim-log time { font: 400 13px/1.6 var(--f-num); color: var(--ink-3); flex: none; }
+.sim-log .sim-empty { border: 0; }
+.sim-reset[data-armed] { color: var(--bad); background: var(--bad-bg); }
+
+@media (max-width: 640px) {
+  .sim { padding: 28px 16px 64px; }
+  .sim-intro h1 { font-size: 32px; }
+  .sim-rooms, .sim-scen { grid-template-columns: 1fr; }
+}
