@@ -3,10 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Casa em 3D</title>
+<title>Casa 3D · Tico&amp;Tech</title>
+<meta name="description" content="A casa em 3D, em tempo real, com a linha do tempo dos agentes e o chat com o Coordenador.">
+<meta name="theme-color" content="#f2f0eb">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/app/theme.css">
 <link rel="stylesheet" href="/twin/ui/twin.css">
 <link rel="stylesheet" href="/chat/ui/chat.css">
 <script type="importmap">
@@ -18,68 +21,92 @@
 }
 </script>
 </head>
-<body>
-<header id="topo">
-  <div class="marca">
-    <h1 id="casa">Casa em 3D</h1>
-    <span class="marca-sub" id="casa-nome"></span>
+<body class="twin">
+<a class="skip" href="#chat">Saltar para o chat</a>
+<header class="shell">
+  <a class="brand" href="/" aria-label="Tico&amp;Tech, visão geral"><span class="wordmark" translate="no">Tico<span class="amp">&amp;</span>Tech</span></a>
+  <nav class="nav" aria-label="Secções">
+    <a href="/">Visão geral</a>
+    <a href="/twin" aria-current="page">Casa 3D</a>
+    <a href="/conhecimento">O que a casa sabe</a>
+  </nav>
+  <div class="shell-status">
+    <a class="st st-agents" id="agents" href="/#act-h">Agentes</a>
+    <span class="st" id="sec">…</span>
+    <span class="st st-mode" id="mode" hidden></span>
+    <span class="conn" id="conn"><span class="dot" aria-hidden="true"></span><span id="conn-text">a ligar…</span></span>
   </div>
-  <div class="estado-casa">
-    <span class="seguranca" id="seguranca" title="Modo de segurança da central">—</span>
-    <span class="modo" id="modo">—</span>
-  </div>
-  <div class="grupo-agentes">
-    <span class="grupo-rotulo">Agentes</span>
-    <span id="agentes" class="agentes" title="Agentes LLM ligados por A2A"></span>
-  </div>
-  <span class="espaco"></span>
-  <span class="ligacao" id="ligacao"><span class="ponto"></span><span id="ligacao-texto">a ligar…</span></span>
+  <button type="button" class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="menu">Menu</button>
 </header>
-<div id="alarme" class="faixa-alarme" role="alert" hidden>
-  <span class="alarme-icone" aria-hidden="true">!</span>
-  <div class="alarme-texto">
-    <strong id="alarme-titulo">A casa está em alarme</strong>
-    <span id="alarme-sub"></span>
-  </div>
-  <button type="button" id="alarme-desligar">Desligar alarme</button>
+<!-- phone: a full-screen menu with the navigation and the whole state of the house -->
+<div class="menu" id="menu" hidden>
+  <nav class="menu-nav" aria-label="Secções">
+    <a href="/">Visão geral</a>
+    <a href="/twin" aria-current="page">Casa 3D</a>
+    <a href="/conhecimento">O que a casa sabe</a>
+  </nav>
+  <dl class="menu-state" id="menu-state"></dl>
 </div>
-<div id="avisos" hidden></div>
+<div class="alarm-band" id="alarm" role="alert" hidden>
+  <svg data-icon="alert"></svg>
+  <div class="grow"><strong id="alarm-title">A casa está em alarme</strong><span id="alarm-sub"></span></div>
+  <button type="button" class="btn" id="alarm-off">Desligar alarme</button>
+</div>
+<div id="avisos" class="warnings" hidden></div>
+
 <main id="principal">
   <div id="cena" aria-label="Vista 3D da casa">
-    <div class="cena-ferramentas">
-      <button type="button" id="ver-casa" title="Voltar à vista da casa toda">Ver casa toda</button>
-      <button type="button" id="editar-3d" title="Arrastar divisões e dispositivos">Ajustar 3D</button>
+    <div class="scene-tools">
+      <button type="button" class="btn sm" id="ver-casa" title="Voltar à vista da casa toda"><svg data-icon="focus"></svg>Ver casa toda</button>
+      <button type="button" class="btn sm" id="editar-3d" title="Arrastar divisões e dispositivos"><svg data-icon="move"></svg><span>Ajustar 3D</span></button>
     </div>
     <div id="edicao" hidden>
-      <span><b>Modo de edição</b> · arrasta as divisões e os dispositivos</span>
-      <button type="button" id="ed-gravar" class="primario">Gravar</button>
-      <button type="button" id="ed-desfazer">Desfazer última</button>
-      <button type="button" id="ed-cancelar">Cancelar</button>
+      <span><b>Modo de edição.</b> Arrasta as divisões e os dispositivos.</span>
+      <button type="button" id="ed-gravar" class="btn sm primary">Gravar</button>
+      <button type="button" id="ed-desfazer" class="btn sm">Desfazer última</button>
+      <button type="button" id="ed-cancelar" class="btn sm quiet">Cancelar</button>
     </div>
-  </div>
-  <aside id="lateral">
-    <section id="painel" hidden>
-      <div class="painel-topo">
+    <div class="heat-legend" aria-hidden="true">
+      <span>Chão pela temperatura</span>
+      <span class="heat-bar"></span>
+      <span class="heat-cap"><span>frio</span><span>alvo</span><span>quente</span></span>
+    </div>
+
+    <!-- Timeline, demoted: the last three things that happened, on the scene's foot; the whole history
+         opens in a sheet over the scene (the scene and the chat lead, the log follows). -->
+    <section class="log" aria-labelledby="log-h">
+      <h2 id="log-h" class="sr-only">Últimos acontecimentos</h2>
+      <ol class="log-latest" id="log-latest" aria-live="polite"><li class="log-empty">À espera do primeiro acontecimento…</li></ol>
+      <button type="button" class="log-open" id="log-open" aria-expanded="false" aria-controls="log-sheet">
+        Linha do tempo <span class="log-count" id="log-count"></span>
+      </button>
+    </section>
+    <aside class="log-sheet" id="log-sheet" aria-labelledby="linha-h" hidden>
+      <header class="log-head">
+        <h2 id="linha-h">Linha do tempo</h2>
+        <button type="button" class="btn sm quiet icon-only" id="log-close" aria-label="Fechar a linha do tempo"><svg data-icon="x"></svg></button>
+      </header>
+      <div class="filters" id="linha-filtros" role="group" aria-label="Filtrar por agente"></div>
+      <ol id="linha-lista"><li class="vazio">Sem eventos ainda.</li></ol>
+    </aside>
+
+    <section id="painel" class="device" hidden aria-labelledby="painel-titulo">
+      <header class="device-head">
+        <span class="device-icon" id="painel-icone"></span>
         <div>
           <h2 id="painel-titulo"></h2>
-          <div class="sub" id="painel-sub"></div>
+          <div class="device-sub" id="painel-sub"></div>
         </div>
-        <button type="button" id="painel-fechar" title="Fechar" aria-label="Fechar">×</button>
-      </div>
-      <div id="painel-estado"></div>
-      <dl id="painel-valores"></dl>
+        <button type="button" class="btn sm quiet icon-only" id="painel-fechar" aria-label="Fechar"><svg data-icon="x"></svg></button>
+      </header>
+      <div id="painel-estado" class="device-state"></div>
+      <dl id="painel-valores" class="device-values"></dl>
       <div id="painel-grafico"></div>
       <div id="painel-camara"></div>
-      <div id="painel-acoes"></div>
+      <div id="painel-acoes" class="device-actions"></div>
     </section>
-    <section id="linha">
-      <div class="linha-topo">
-        <h2>Linha do tempo</h2>
-        <div class="filtros" id="linha-filtros" role="group" aria-label="Filtrar por agente"></div>
-      </div>
-      <ol id="linha-lista"><li class="vazio">Sem eventos ainda.</li></ol>
-    </section>
-  </aside>
+  </div>
+
   <aside id="chat" aria-label="Chat com o Coordenador"></aside>
 </main>
 <script type="module" src="/twin/ui/twin.js"></script>
@@ -87,6 +114,11 @@
 import { mountChat } from "/chat/ui/chat.js";
 const chat = mountChat(document.getElementById("chat"), { compact: false });
 window.addEventListener("tt:chat-send", (e) => chat.send(e.detail));
+// coming from the overview's alarm band: ask the Coordinator to disarm (it confirms first)
+if (new URLSearchParams(location.search).get("alarme") === "1") {
+  history.replaceState(null, "", "/twin");
+  setTimeout(() => chat.send("Foi falso alarme, desliga o alarme"), 400);
+}
 </script>
 <script type="module" src="/chat/ui/knowledge.js"></script>
 </body>

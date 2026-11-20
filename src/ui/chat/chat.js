@@ -1,3 +1,4 @@
+import { icon } from "/static/app/icons.js";
 // Chat with the Coordinator (the user's only conversation with the house).
 // mountChat(container) builds the panel; messages come from /chat/messages (polling 2 s).
 // Buttons post to /chat/action. Other modules listen to window events:
@@ -11,8 +12,8 @@ const $el = (tag, cls, text) => {
   return n;
 };
 const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
-const EXAMPLES = ["A janela da sala está fechada?", "Quanto gastei ontem?", "Quero o quarto a 21 °C de manhã",
-  "Se abrir a janela com o aquecedor ligado, avisa-me", "Tens alguma sugestão?"];
+// three short starters, wrapped (never a sideways scroller); the longer demo lines are typed
+const EXAMPLES = ["A janela da sala está fechada?", "Quanto gastei ontem?", "Tens alguma sugestão?"];
 
 async function api(path, body) {
   const res = await fetch(path, body === undefined ? {} : {
@@ -22,8 +23,8 @@ async function api(path, body) {
   return res.json();
 }
 
-// categorical series colours, fixed order (validated all-pairs on the dark panel: blue, orange, aqua)
-const SERIES = ["#3987e5", "#d95926", "#199e70"];
+// categorical series colours, fixed order (the agents' palette on paper: blue, orange, teal)
+const SERIES = ["#2c62b4", "#c4501c", "#11806f"];
 
 export function chartLegend(series) {
   const box = $el("div", "tt-legenda");
@@ -56,13 +57,13 @@ export function lineChart(series, { height = 120, windows = [] } = {}) {
   for (const w of windows) {
     const r = document.createElementNS(svgNS, "rect");
     r.setAttribute("x", X(Math.max(w[0], x0))); r.setAttribute("width", Math.max(1, X(Math.min(w[1], x1)) - X(Math.max(w[0], x0))));
-    r.setAttribute("y", 0); r.setAttribute("height", height); r.setAttribute("fill", "rgba(250,178,25,.12)");
+    r.setAttribute("y", 0); r.setAttribute("height", height); r.setAttribute("fill", "rgba(226,83,27,.10)");
     svg.appendChild(r);
   }
   for (const v of [y0, (y0 + y1) / 2, y1]) {  // faint grid
     const g = document.createElementNS(svgNS, "line");
     g.setAttribute("x1", pad); g.setAttribute("x2", 300 - pad); g.setAttribute("y1", Y(v)); g.setAttribute("y2", Y(v));
-    g.setAttribute("stroke", "rgba(133,145,166,.18)"); g.setAttribute("vector-effect", "non-scaling-stroke");
+    g.setAttribute("stroke", "rgba(24,24,27,.08)"); g.setAttribute("vector-effect", "non-scaling-stroke");
     svg.appendChild(g);
   }
   series.forEach((s, i) => {
@@ -74,7 +75,7 @@ export function lineChart(series, { height = 120, windows = [] } = {}) {
   });
   for (const [v, y] of [[y1, pad - 3], [y0, height - 3]]) {
     const t = document.createElementNS(svgNS, "text");
-    t.setAttribute("x", 2); t.setAttribute("y", y); t.style.fill = "var(--c-muted, #8591a6)"; t.setAttribute("font-size", "9");
+    t.setAttribute("x", 2); t.setAttribute("y", y); t.style.fill = "var(--ink-3, #69665f)"; t.setAttribute("font-size", "9");
     t.textContent = `${(Math.round(v * 10) / 10).toLocaleString("pt-PT")}${series[0]?.unit ? " " + series[0].unit : ""}`;
     svg.appendChild(t);
   }
@@ -86,10 +87,10 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
   container.innerHTML = "";
   const topo = $el("div", "tt-chat-topo");
   const h = $el("h2", null, title);
-  h.appendChild($el("small", null, "Fala só comigo; eu trato do resto com os agentes."));
-  const saber = $el("button", null, "O que a casa sabe de ti");
-  saber.addEventListener("click", () => window.dispatchEvent(new CustomEvent("tt:knowledge")));
-  const limpar = $el("button", null, "Limpar");
+  h.appendChild($el("small", null, "Fala só com ele; trata do resto com os agentes."));
+  const limpar = $el("button", "tt-icon-btn");
+  limpar.type = "button";
+  limpar.append(icon("trash"));
   limpar.title = "Limpar a conversa";
   limpar.setAttribute("aria-label", "Limpar a conversa");
   limpar.addEventListener("click", async () => {
@@ -106,19 +107,28 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
       input.focus();
     }
   });
-  topo.append(h, limpar, saber);
+  topo.append(h, limpar);
   const lista = $el("div", "tt-chat-lista");
+  lista.setAttribute("role", "log");
+  lista.setAttribute("aria-live", "polite");
+  lista.setAttribute("aria-label", "Conversa com o Coordenador");
   const sugestoes = $el("div", "tt-chat-sugestoes");
+  sugestoes.setAttribute("aria-label", "Perguntas de exemplo");
   for (const ex of EXAMPLES) {
     const b = $el("button", null, ex);
+    b.type = "button";
     b.addEventListener("click", () => send(ex));
     sugestoes.appendChild(b);
   }
   const form = $el("form", "tt-chat-form");
   const input = $el("input");
+  input.name = "mensagem";
+  input.autocomplete = "off";
+  input.setAttribute("enterkeyhint", "send");
   input.placeholder = "Escreve ao Coordenador…";
   input.setAttribute("aria-label", "Mensagem para o Coordenador");
-  const enviar = $el("button", null, "Enviar");
+  const enviar = $el("button", "tt-send");
+  enviar.append(icon("send"), $el("span", "tt-send-label", "Enviar"));
   enviar.type = "submit";
   form.append(input, enviar);
   container.append(topo, lista, ...(compact ? [] : [sugestoes]), form);
@@ -127,12 +137,14 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
   const answered = new Set();  // decision / confirm ids already answered: their buttons are disabled
   let busy = false;
 
-  function markAnswered(div) {
+  // an answered card stops asking: its buttons go (the "Porquê?" stays), the eyebrow says what you chose
+  function markAnswered(div, choice) {
     div.classList.add("respondido");
+    div.querySelectorAll(".tt-botoes button:not(.porque)").forEach((b) => b.remove());
     const olho = div.querySelector(".tt-olho");
     if (olho && !olho.dataset.respondido) {
       olho.dataset.respondido = "1";
-      olho.firstChild.textContent += " · respondida";
+      olho.firstChild.textContent += choice ? ` · respondeste «${choice}»` : " · respondida";
     }
   }
 
@@ -184,9 +196,9 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
     if (buttons.length || m.why || m.suggestion_id) {
       const row = $el("div", "tt-botoes");
       for (const b of buttons) {
+        if (answered.has(key)) break;  // answered: no dead buttons
         const btn = $el("button", /Aprovar|Confirmar|Aceitar|Está bem/.test(b.label) ? "primario" : null, b.label);
         btn.type = "button";
-        btn.disabled = answered.has(key);
         btn.addEventListener("click", () => press(b, row, key));
         row.appendChild(btn);
       }
@@ -236,9 +248,8 @@ export function mountChat(container, { title = "Coordenador", compact = false } 
       if (comment === null) return;
     }
     answered.add(key);
-    row.querySelectorAll("button").forEach((x) => { if (!x.classList.contains("porque")) x.disabled = true; });
     const card = row.closest(".cartao");
-    if (card) markAnswered(card);
+    if (card) markAnswered(card, b.label);
     try {
       const out = await api("/chat/action", { action: b.action, id: b.id || null, response: b.response || null, comment });
       out.messages.forEach(render);

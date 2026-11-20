@@ -209,13 +209,18 @@ def create_app(memory: SharedMemory, settings: Settings, coordinator: Coordinato
         reusing an old twin.js / chat.js from its cache."""
         response = await call_next(request)
         path = request.url.path
-        if path in ("/", "/twin") or path.startswith(("/twin/ui/", "/chat/ui/")):
+        if path in ("/", "/twin", "/conhecimento") or path.startswith(("/twin/ui/", "/chat/ui/", "/static/app/")):
             response.headers["Cache-Control"] = "no-cache"
         return response
 
     app.mount("/static", StaticFiles(directory=UI_DIR / "static"), name="static")  # vendored Three.js
     app.mount("/twin/ui", StaticFiles(directory=UI_DIR / "twin"), name="twin-ui")
     app.mount("/chat/ui", StaticFiles(directory=UI_DIR / "chat"), name="chat-ui")
+
+    @app.get("/conhecimento", response_class=HTMLResponse, include_in_schema=False)
+    def knowledge_page():
+        """"O que a casa sabe de ti": a page of its own (it was a modal)."""
+        return (UI_DIR / "knowledge.html").read_text(encoding="utf-8")
 
     @app.get("/twin", response_class=HTMLResponse, include_in_schema=False)
     def twin_page():

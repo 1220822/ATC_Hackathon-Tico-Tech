@@ -3,6 +3,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/OrbitControls.js";
 import { CSS2DObject, CSS2DRenderer } from "three/addons/CSS2DRenderer.js";
+import { icon, ROLE } from "/static/app/icons.js";
+import { renderShell, setConnection, MODE_PT, AREA_VAR, statusPt, statusClass, plain } from "/static/app/shell.js";
 
 // ------------------------------------------------------------------ constants / helpers
 const WALL_T = 0.08;
@@ -11,14 +13,12 @@ const STREAM_STALE_MS = 20000;
 const BALLOON_MS = 6500;
 const nf1 = new Intl.NumberFormat("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const nf0 = new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 });
-const TYPE_PT = {
-  temperature: "Sensor de temperatura", contact: "Sensor de contacto", light: "Lâmpada", plug: "Tomada (aquecedor)",
-  smoke: "Detetor de fumo", hub: "Central de segurança", camera: "Câmara",
-};
-const MODE_PT = { DISARMED: "Desarmada", STAY: "Armada (em casa)", AWAY: "Armada (ausente)" };
-const AREA_VAR = {
-  "Segurança": "--a-seguranca", "Energia": "--a-energia", "Conforto": "--a-conforto", "Emergência": "--a-emergencia",
-  "Coordenador": "--a-coordenador", "Sistema": "--a-sistema",
+const TYPE_PT = Object.fromEntries(Object.entries(ROLE).map(([k, v]) => [k, v.name]));
+// scene palette (matches theme.css: paper, ink, one signal colour)
+const C = {
+  paper: 0xf2f0eb, ground: 0xe7e3da, gridMajor: 0xcfc9bd, gridMinor: 0xdedad1, floor: 0xdcd6ca,
+  ink: 0x18181b, body: 0x2a2a2e, detail: 0xf2f0eb, offline: 0xb5afa3, signal: 0xe2531b, warn: 0xd48a0b,
+  bad: 0xbf3328, ok: 0x2c7a4b, blue: 0x2c62b4,
 };
 // events that only repeat a value already visible on a label: timeline yes, 3D balloon no
 const QUIET = new Set(["temperature_changed", "humidity_changed", "plug_power_changed", "device_online"]);
@@ -47,14 +47,16 @@ const areaColor = (area) => `var(${AREA_VAR[area] || "--a-sistema"})`;
 const host = $("cena");
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "low-power" });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));  // light on integrated GPUs
-renderer.setClearColor(0x0b0f15);
+renderer.setClearColor(C.paper);
 host.append(renderer.domElement);
 const labels = new CSS2DRenderer();
-Object.assign(labels.domElement.style, { position: "absolute", top: "0", left: "0", pointerEvents: "none" });
+// zIndex 1: its own stacking context, so the per-label z-indexes CSS2DRenderer sets stay under the
+// device card, the timeline sheet and the tools
+Object.assign(labels.domElement.style, { position: "absolute", top: "0", left: "0", pointerEvents: "none", zIndex: "1" });
 host.append(labels.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x0b0f15, 30, 60);
+scene.fog = new THREE.Fog(C.paper, 24, 55);
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -62,20 +64,29 @@ controls.maxPolarAngle = Math.PI * 0.47;
 controls.minDistance = 2;
 controls.maxDistance = 40;
 
-scene.add(new THREE.HemisphereLight(0xdde6ff, 0x2a2f38, 1.6));
-const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd8d1c2, 2.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.3);
 sun.position.set(-6, 12, 9);
 scene.add(sun);
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x111720, roughness: 1 }));
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: C.ground, roughness: 1 }));
 ground.rotation.x = -Math.PI / 2;
-ground.position.y = -0.01;
+ground.position.y = -0.02;
 scene.add(ground);
+const grid = new THREE.GridHelper(60, 120, C.gridMajor, C.gridMinor);  // 0,5 m: a drawing board under the house
+grid.position.y = -0.01;
+scene.add(grid);
 
 function resize() {
   const w = host.clientWidth, h = host.clientHeight;
   renderer.setSize(w, h);
   labels.setSize(w, h);
   camera.aspect = w / Math.max(h, 1);
+  // the log bar covers the scene's foot: shift the projection up by half of it, so the house sits
+  // centred in the part of the scene that is actually free (the picture moves, the camera does not)
+  const bar = document.querySelector(".log");
+  const lift = bar ? Math.round((bar.offsetHeight + 16) / 2) : 0;
+  if (lift && w && h) camera.setViewOffset(w, h, 0, lift, w, h);
+  else camera.clearViewOffset();
   camera.updateProjectionMatrix();
 }
 new ResizeObserver(resize).observe(host);
@@ -137,13 +148,13 @@ function buildWorld(st) {
   disposeWorld();
   const root = new THREE.Group();
   const w = { root, rooms: {}, devices: {}, openings: {}, wallEdges: [], hits: [], floors: [] };
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xc9d3e6, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide });
-  const edgeMat = new THREE.LineBasicMaterial({ color: 0x8592aa, transparent: true, opacity: 0.55 });
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide });
+  const edgeMat = new THREE.LineBasicMaterial({ color: C.ink, transparent: true, opacity: 0.6 });
   w.edgeMat = edgeMat;
 
   for (const r of st.rooms) {
     const g = new THREE.Group();
-    const floorMat = mat(0x394150, { roughness: 0.9 });
+    const floorMat = mat(C.floor, { roughness: 0.95 });
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(r.width, r.depth), floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(r.x + r.width / 2, 0.005, r.z + r.depth / 2);
@@ -210,12 +221,12 @@ function buildOpening(w, g, room, f, o) {
   pivot.rotation.y = f.dir.z ? -Math.PI / 2 : 0;  // local +x runs along the wall
   const isWindow = o.type === "window";
   const leafMat = isWindow
-    ? new THREE.MeshStandardMaterial({ color: 0x9fd0ff, transparent: true, opacity: 0.38, roughness: 0.1, depthWrite: false })
-    : new THREE.MeshStandardMaterial({ color: 0x7d8798, transparent: true, opacity: 0.5, depthWrite: false });
+    ? new THREE.MeshStandardMaterial({ color: 0x8fb8e6, transparent: true, opacity: 0.45, roughness: 0.1, depthWrite: false })
+    : new THREE.MeshStandardMaterial({ color: 0xc7bfb0, transparent: true, opacity: 0.75, depthWrite: false });
   const leaf = part(GEO.box, leafMat, o.width, o.height, isWindow ? 0.03 : 0.05, o.width / 2, o.height / 2, 0);
   pivot.add(leaf);
   const frame = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(o.width, o.height, 0.04)),
-    new THREE.LineBasicMaterial({ color: isWindow ? 0xcfe6ff : 0x9aa3b2 }));
+    new THREE.LineBasicMaterial({ color: isWindow ? C.blue : 0x69665f }));
   frame.position.set(o.width / 2, o.height / 2, 0);
   pivot.add(frame);
   g.add(pivot);
@@ -260,12 +271,13 @@ function buildDevice(w, d, st) {
   g.rotation.y = THREE.MathUtils.degToRad(d.rotation_y || 0);
   const parts = new THREE.Group();
   g.add(parts);
-  const white = mat(0xf2f4f8);
+  const white = mat(C.body);  // device bodies: graphite on the light house
+  const face = mat(C.detail);
   const extra = {};
   switch (d.role) {
     case "temperature":
       parts.add(part(GEO.box, white, 0.14, 0.14, 0.035));
-      parts.add(part(GEO.box, mat(0x2b3240), 0.09, 0.05, 0.01, 0, 0.02, 0.02));
+      parts.add(part(GEO.box, face, 0.09, 0.05, 0.01, 0, 0.02, 0.02));
       extra.label = label("—");
       extra.label.position.set(0, 0.32, 0);
       break;
@@ -275,7 +287,7 @@ function buildDevice(w, d, st) {
       break;
     case "light": {
       const bulbMat = mat(0xffffff, { emissive: 0xffffff, emissiveIntensity: 1 });
-      parts.add(part(GEO.cyl, mat(0x777f8e), 0.012, 0.12, 0.012, 0, 0.06, 0));
+      parts.add(part(GEO.cyl, mat(0x6b665e), 0.012, 0.12, 0.012, 0, 0.06, 0));
       parts.add(part(GEO.sphere, bulbMat, 0.1, 0.12, 0.1, 0, -0.06, 0));
       const light = new THREE.PointLight(0xffffff, 0, 9, 1.4);
       light.position.set(0, -0.25, 0);
@@ -285,10 +297,10 @@ function buildDevice(w, d, st) {
     }
     case "plug": {
       parts.add(part(GEO.box, white, 0.11, 0.11, 0.03));
-      const holes = mat(0x30363f);
+      const holes = face;
       parts.add(part(GEO.cyl, holes, 0.012, 0.02, 0.012, -0.022, 0, 0.016).rotateX(Math.PI / 2));
       parts.add(part(GEO.cyl, holes, 0.012, 0.02, 0.012, 0.022, 0, 0.016).rotateX(Math.PI / 2));
-      const glowMat = new THREE.MeshBasicMaterial({ color: 0xffa640, transparent: true, opacity: 0, depthWrite: false });
+      const glowMat = new THREE.MeshBasicMaterial({ color: C.signal, transparent: true, opacity: 0, depthWrite: false });
       const glow = part(GEO.sphere, glowMat, 0.2, 0.2, 0.2);
       g.add(glow);
       extra.glow = glow;
@@ -298,19 +310,19 @@ function buildDevice(w, d, st) {
     }
     case "smoke": {
       parts.add(part(GEO.cyl, white, 0.13, 0.05, 0.13));
-      const ledMat = new THREE.MeshBasicMaterial({ color: 0x3ccf7f });
+      const ledMat = new THREE.MeshBasicMaterial({ color: C.ok });
       parts.add(part(GEO.sphere, ledMat, 0.015, 0.015, 0.015, 0.06, -0.026, 0));
       extra.ledMat = ledMat;
       break;
     }
     case "hub":
       parts.add(part(GEO.box, white, 0.26, 0.06, 0.18));
-      parts.add(part(GEO.cyl, mat(0x6aa8ff, { emissive: 0x2a4f88 }), 0.05, 0.01, 0.05, 0, 0.035, 0));
+      parts.add(part(GEO.cyl, mat(C.detail, { emissive: 0x555555 }), 0.05, 0.01, 0.05, 0, 0.035, 0));
       extra.label = label("—");
       extra.label.position.set(0, 0.32, 0);
       break;
     case "camera": {
-      parts.add(part(GEO.box, mat(0x2b3038), 0.12, 0.09, 0.16));
+      parts.add(part(GEO.box, white, 0.12, 0.09, 0.16));
       parts.add(part(GEO.cyl, mat(0x111111), 0.035, 0.03, 0.035, 0, 0, 0.09).rotateX(Math.PI / 2));
       if (d.target) {
         const from = new THREE.Vector3().fromArray(d.position), to = new THREE.Vector3().fromArray(d.target);
@@ -319,7 +331,7 @@ function buildDevice(w, d, st) {
         // view_radius: the cone reaches the farthest corner of the room (the camera covers it all)
         const geo = new THREE.ConeGeometry(d.view_radius || len * 0.3, len, 28, 1, true);
         geo.translate(0, -len / 2, 0);  // apex at the camera
-        const coneMat = new THREE.MeshBasicMaterial({ color: 0x8fb4e8, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide });
+        const coneMat = new THREE.MeshBasicMaterial({ color: C.blue, transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide });
         const cone = new THREE.Mesh(geo, coneMat);
         cone.position.copy(from);
         cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir.normalize());
@@ -329,7 +341,7 @@ function buildDevice(w, d, st) {
       break;
     }
     default:
-      parts.add(part(GEO.box, mat(0x9aa3b2), 0.12, 0.12, 0.12));
+      parts.add(part(GEO.box, white, 0.12, 0.12, 0.12));
   }
   const hit = new THREE.Mesh(GEO.hit, HIT_MAT);
   hit.userData.deviceId = d.id;
@@ -362,13 +374,16 @@ let tween = null;
 function moveCamera(target, position, ms = 800) {
   tween = { t0: performance.now(), ms, fromT: controls.target.clone(), toT: target, fromP: camera.position.clone(), toP: position };
 }
+// a narrow scene (a phone, a tall pane) needs the camera further back to keep the whole house in frame
+const fitFactor = () => Math.min(2, Math.max(1, 1.15 / Math.max(camera.aspect, 0.1)));
 function viewHouse(instant = false) {
   if (!world) return;
   const c = world.bounds.getCenter(new THREE.Vector3());
   const size = world.bounds.getSize(new THREE.Vector3());
   const span = Math.max(size.x, size.z, 4);
   const target = new THREE.Vector3(c.x, 0.6, c.z);
-  const pos = new THREE.Vector3(c.x + span * 0.35, span * 0.95, c.z + span * 1.15);
+  const k = fitFactor();
+  const pos = new THREE.Vector3(c.x + span * 0.35 * k, span * 0.95 * k, c.z + span * 1.15 * k);
   if (instant) { controls.target.copy(target); camera.position.copy(pos); controls.update(); }
   else moveCamera(target, pos);
 }
@@ -377,13 +392,14 @@ function focusRoom(id) {
   if (!r) return;
   const c = new THREE.Vector3(r.x + r.width / 2, 0.8, r.z + r.depth / 2);
   const span = Math.max(r.width, r.depth);
-  moveCamera(c, new THREE.Vector3(c.x + span * 0.3, span * 1.35, c.z + span * 1.4));
+  const k = fitFactor();
+  moveCamera(c, new THREE.Vector3(c.x + span * 0.3 * k, span * 1.35 * k, c.z + span * 1.4 * k));
 }
 $("ver-casa").addEventListener("click", () => viewHouse());
 
 // ------------------------------------------------------------------ applying state
 // diverging scale (dataviz): cold blue <-> neutral grey at the comfort temperature <-> warm red.
-const HEAT = { cold: new THREE.Color(0x3987e5), mid: new THREE.Color(0x3a404b), warm: new THREE.Color(0xe66767) };
+const HEAT = { cold: new THREE.Color(0x7fa6dc), mid: new THREE.Color(0xd9d3c7), warm: new THREE.Color(0xe8896b) };
 function heatColor(t, disp) {
   if (t == null) return HEAT.mid.clone();
   if (t <= disp.heat_mid_c) {
@@ -405,8 +421,8 @@ function applyState(st) {
     const wr = world.rooms[r.id];
     wr.data = r;
     const heat = r.temperature_c == null ? null : heatColor(r.temperature_c, disp);
-    wr.floorMat.color.copy(heat ? heat.clone().multiplyScalar(0.62) : new THREE.Color(0x2a313c));
-    wr.floorMat.emissive.copy(heat ? heat.clone().multiplyScalar(0.18) : new THREE.Color(0x000000));
+    wr.floorMat.color.copy(heat ? heat.clone() : new THREE.Color(C.floor));
+    wr.floorMat.emissive.copy(heat ? heat.clone().multiplyScalar(0.06) : new THREE.Color(0x000000));
     wr.smoke = r.smoke;
     wr.fog.visible = r.smoke;
     wr.particles.visible = r.smoke;
@@ -423,10 +439,10 @@ function applyDevice(wd, d, st) {
   // offline look: grey and see-through, with the time of the last message
   for (const { m, color, opacity, transparent } of wd.mats) {
     if (d.online) { m.color.copy(color); m.opacity = opacity; m.transparent = transparent; }
-    else { m.color.set(0x6b7280); m.opacity = 0.35; m.transparent = true; }
+    else { m.color.set(C.offline); m.opacity = 0.45; m.transparent = true; }
   }
   wd.status.visible = !d.online;
-  wd.status.userData.div.textContent = `offline · ${d.last_seen ? hhmm(d.last_seen) : "sem dados"}`;
+  wd.status.userData.div.textContent = `sem ligação · ${d.last_seen ? hhmm(d.last_seen) : "nunca"}`;
 
   switch (d.role) {
     case "temperature":
@@ -437,9 +453,8 @@ function applyDevice(wd, d, st) {
       const op = d.opening && world.openings[d.opening];
       if (op) {
         op.target = op.base + (v.open ? op.swing * 1.2 : 0);
-        const amber = v.open && st.security.armed;
-        op.leafMat.color.copy(amber ? new THREE.Color(0xfab219) : op.baseColor);
-        op.leafMat.opacity = amber ? 0.7 : 0.38;
+        op.leafMat.color.copy(v.open ? new THREE.Color(st.security.armed ? C.bad : C.signal) : op.baseColor);
+        op.leafMat.opacity = v.open ? 0.75 : (op.type === "window" ? 0.45 : 0.75);
       }
       break;
     }
@@ -451,7 +466,7 @@ function applyDevice(wd, d, st) {
       wd.light.color.copy(color);
       wd.light.intensity = on ? 0.6 + 7 * b : 0;
       if (d.online) {
-        wd.bulbMat.color.copy(on ? color : new THREE.Color(0x9aa3b2));
+        wd.bulbMat.color.copy(on ? color : new THREE.Color(0xd6d1c6));
         wd.bulbMat.emissive.copy(on ? color : new THREE.Color(0x000000));
         wd.bulbMat.emissiveIntensity = on ? 0.4 + 1.6 * b : 0;
       } else wd.bulbMat.emissiveIntensity = 0;
@@ -466,12 +481,12 @@ function applyDevice(wd, d, st) {
     }
     case "smoke":
       wd.alarm = !!v.alarm;
-      if (!wd.alarm) wd.ledMat.color.set(0x3ccf7f);
+      if (!wd.alarm) wd.ledMat.color.set(C.ok);
       break;
     case "hub": {
       const s = st.security;
       const div = wd.label.userData.div;
-      div.textContent = st.alarm.any ? "EM ALARME" : (MODE_PT[s.status] || s.status);
+      div.textContent = st.alarm.any ? "Em alarme" : (MODE_PT[s.status] || s.status);
       div.className = "rotulo " + (st.alarm.any ? "modo-alarme" : s.armed ? "modo-armada" : "modo-desarmada");
       break;
     }
@@ -482,54 +497,10 @@ function applyDevice(wd, d, st) {
 }
 
 function renderHeader(st) {
-  $("casa-nome").textContent = st.home_name || "";
-  const modo = $("modo");
-  modo.textContent = (st.mode === "simulado" ? "Casa simulada" : "Casa real (MCP)") + (st.dry_run ? " · só regista" : " · atua");
-  modo.className = "modo" + (st.mode === "simulado" ? " simulado" : st.dry_run ? "" : " atua");
-  modo.title = st.dry_run ? "Dry-run: o Coordenador regista as decisões mas não envia nada à casa."
-    : "O Coordenador executa as decisões aprovadas na casa.";
-  const seg = $("seguranca");
-  const alarm = st.alarm;
-  seg.textContent = alarm.any ? "Em alarme" : (MODE_PT[st.security.status] || st.security.status);
-  seg.className = "seguranca " + (alarm.any ? "alarme" : st.security.armed ? "armada" : "desarmada");
-  renderAlarm(st);
-  renderAgents(st.agents || []);
+  renderShell(st);  // brand, security, mode, agents, alarm band: shared with the overview
   const av = $("avisos");
   av.hidden = !st.warnings.length;
   av.replaceChildren(...st.warnings.map((w) => el("div", null, w)));
-}
-
-// Alarm band: what is alarming, and the way out (the chat asks for the confirmation to disarm)
-let alarmSince = null;
-function renderAlarm(st) {
-  const a = st.alarm;
-  $("alarme").hidden = !a.any;
-  if (!a.any) { alarmSince = null; return; }
-  alarmSince ??= Date.now() / 1000;
-  const room = a.smoke_room && st.rooms.find((r) => r.id === a.smoke_room);
-  $("alarme-titulo").textContent = a.smoke ? `Fumo detetado${room ? ` · ${room.name}` : ""}`
-    : a.intrusion ? "Possível intrusão: a casa está em alarme" : a.hub ? "A central de segurança está em alarme"
-    : "A casa está em alarme";
-  $("alarme-sub").textContent = `desde as ${hhmm(alarmSince)} · se foste tu, diz-me no chat ou desliga aqui`;
-}
-$("alarme-desligar").addEventListener("click", () => {
-  window.dispatchEvent(new CustomEvent("tt:chat-send", { detail: "Foi falso alarme, desliga o alarme" }));
-});
-
-// LLM agents (A2A) as the Coordinator sees them: waiting, online, thinking, unavailable
-function renderAgents(agents) {
-  const box = $("agentes");
-  box.replaceChildren(...agents.map((a) => {
-    const cls = a.busy ? "ocupado" : a.online === true ? "online" : a.online === false ? "offline" : "espera";
-    const label = a.busy ? "a pensar" : a.online === true ? (a.last_latency_s != null ? `${nf1.format(a.last_latency_s)} s` : "pronto")
-      : a.online === false ? "indisponível" : "em espera";  // never called yet: nothing for it so far
-    const chip = el("span", `agente ${cls}${a.name === "Coordenador" ? " coordenador" : ""}`, el("span", "id"), a.name, el("small", null, label));
-    chip.style.setProperty("--area", areaColor(a.name));
-    chip.title = a.last_error ? `${a.name} (A2A ${a.url}): ${a.last_error}`
-      : a.online == null ? `${a.name} · A2A ${a.url} · ainda não recebeu nenhum evento que lhe diga respeito`
-      : `${a.name} · A2A ${a.url}`;
-    return chip;
-  }));
 }
 
 // ------------------------------------------------------------------ device panel
@@ -568,9 +539,10 @@ function renderPanel() {
   if (!d) { closePanel(); return; }
   $("painel").hidden = false;
   $("painel-titulo").textContent = TYPE_PT[d.role] || d.type;
+  $("painel-icone").replaceChildren(icon(ROLE[d.role]?.icon || "grid"));
   $("painel-sub").textContent = `${d.name} · ${d.room_name}` + (d.placed === "default" ? " · posição por omissão" : "");
   $("painel-estado").replaceChildren(el("span", "ponto " + (d.online ? "on" : "off")),
-    d.online ? `Online · última comunicação ${ago(d.last_seen)}` : `Offline desde ${d.last_seen ? new Date(d.last_seen * 1000).toLocaleString("pt-PT") : "—"}`);
+    d.online ? `Ligado · última comunicação ${ago(d.last_seen)}` : `Sem ligação desde ${d.last_seen ? new Date(d.last_seen * 1000).toLocaleString("pt-PT") : "—"}`);
   const dl = $("painel-valores");
   dl.replaceChildren();
   for (const [k, v] of valueRows(d)) dl.append(el("dt", null, k), el("dd", null, v));
@@ -603,11 +575,11 @@ async function renderChart(d) {
     for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
     return n;
   };
-  const SERIES = "#3987e5";
+  const SERIES = "#2c62b4";
   const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
     "aria-label": `${TYPE_PT[d.role] || d.type}: histórico das últimas 6 horas` });
   for (const y of [pad, H / 2, H - pad]) {  // faint grid
-    svg.append(svgEl("line", { x1: 0, x2: W, y1: y, y2: y, stroke: "rgba(133,145,166,.16)", "vector-effect": "non-scaling-stroke" }));
+    svg.append(svgEl("line", { x1: 0, x2: W, y1: y, y2: y, stroke: "rgba(24,24,27,.08)", "vector-effect": "non-scaling-stroke" }));
   }
   // contact / light are on-off: a step line; temperature / power: straight segments
   const step = !unit;
@@ -617,10 +589,10 @@ async function renderChart(d) {
     pts.push([px(r.ts), py(r.value)]);
   });
   const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  svg.append(svgEl("polygon", { points: `${pad},${H} ${line} ${px(x1).toFixed(1)},${H}`, fill: SERIES, "fill-opacity": "0.14" }));
+  svg.append(svgEl("polygon", { points: `${pad},${H} ${line} ${px(x1).toFixed(1)},${H}`, fill: SERIES, "fill-opacity": "0.1" }));
   svg.append(svgEl("polyline", { points: line, fill: "none", stroke: SERIES, "stroke-width": "2",
     "stroke-linejoin": "round", "vector-effect": "non-scaling-stroke" }));
-  const cross = svgEl("line", { y1: 0, y2: H, stroke: "rgba(230,235,243,.4)", "vector-effect": "non-scaling-stroke", visibility: "hidden" });
+  const cross = svgEl("line", { y1: 0, y2: H, stroke: "rgba(24,24,27,.35)", "vector-effect": "non-scaling-stroke", visibility: "hidden" });
   svg.append(cross);
   const fmt = (y) => (unit ? `${metric === "power_w" ? nf0.format(y) : nf1.format(y)} ${unit}`
     : metric === "open" ? (y >= 0.5 ? "aberta" : "fechada") : (y >= 0.5 ? "ligada" : "desligada"));
@@ -628,7 +600,7 @@ async function renderChart(d) {
   // endpoint: HTML dot over the SVG (the SVG is stretched, a circle in it would be an ellipse)
   const dot = el("span", null);
   dot.style.cssText = `position:absolute;width:8px;height:8px;border-radius:50%;background:${SERIES};`
-    + `box-shadow:0 0 0 2px var(--panel-2);transform:translate(-50%,-50%);pointer-events:none`;
+    + `box-shadow:0 0 0 2px var(--sheet);transform:translate(-50%,-50%);pointer-events:none`;
   const tip = el("div", "dica");
   tip.hidden = true;
   const plot = el("div", null);
@@ -809,7 +781,7 @@ function setEditMode(on) {
   editMode = on;
   $("edicao").hidden = !on;
   host.classList.toggle("editar", on);
-  $("editar-3d").textContent = on ? "Sair da edição" : "Ajustar 3D";
+  $("editar-3d").querySelector("span").textContent = on ? "Sair da edição" : "Ajustar 3D";
   drag = null;
   controls.enabled = true;
   for (const k of Object.keys(movedRooms)) delete movedRooms[k];
@@ -948,6 +920,7 @@ renderFilters();
 
 function addTimeline(items, { animate }) {
   const list = $("linha-lista");
+  if (!items.length) return;
   list.querySelector(".vazio")?.remove();
   for (const it of items.sort((a, b) => a.ts - b.ts)) {
     if (seen.has(it.id)) continue;
@@ -963,14 +936,52 @@ function addTimeline(items, { animate }) {
     time.dateTime = new Date(it.ts * 1000).toISOString();
     const meta = el("div", "meta", time, el("span", "area", decision ? it.agent : it.area),
       it.room_name ? el("span", null, `· ${it.room_name}`) : null,
-      decision ? el("span", `estado ${it.status}`, it.status) : null);
-    li.append(meta, el("div", null, it.message));
+      decision ? el("span", `mark ${statusClass(it.status)}`, statusPt(it.status)) : null);
+    const text = plain(it.message || "");
+    const body = el("div", null, text);
+    if (text !== it.message) body.title = it.message;
+    li.append(meta, body);
     applyFilter(li);
     list.prepend(li);
     if (animate && (decision || !QUIET.has(it.type))) showBalloon(it);
+    if (decision || !QUIET.has(it.type)) latest.unshift({ ...it, fresh: animate });
   }
   while (list.children.length > 80) list.lastChild.remove();
+  latest.sort((a, b) => b.ts - a.ts).splice(3);
+  renderLatest();
 }
+
+// the scene's foot: the last three things that happened, newest first and strongest
+const latest = [];
+function renderLatest() {
+  const box = $("log-latest");
+  $("log-count").textContent = seen.size ? String(seen.size) : "";
+  if (!latest.length) return;
+  box.replaceChildren(...latest.map((it, i) => {
+    const decision = it.kind === "decision";
+    const who = areaOf(it);
+    const mark = el("span", "agent-id" + (who === "Coordenador" ? " coord" : ""));
+    mark.style.setProperty("--area", areaColor(who));
+    const time = el("time", null, hhmm(it.ts));
+    time.dateTime = new Date(it.ts * 1000).toISOString();
+    const li = el("li", ["log-item", i === 0 ? "is-latest" : "", it.severity === "critical" ? "critical" : "", it.fresh && i === 0 ? "novo" : ""].filter(Boolean).join(" "),
+      time, el("span", "log-who", mark, decision ? it.agent : it.area), el("span", "log-what", plain(it.message || "")),
+      decision ? el("span", `mark ${statusClass(it.status)}`, statusPt(it.status)) : null);
+    it.fresh = false;
+    return li;
+  }));
+}
+
+// the whole history: a sheet over the scene (Esc or the close button puts it away)
+function setSheet(open) {
+  $("log-sheet").hidden = !open;
+  $("log-open").setAttribute("aria-expanded", String(open));
+  host.classList.toggle("sheet-open", open);
+  (open ? $("log-close") : $("log-open")).focus();
+}
+$("log-open").addEventListener("click", () => setSheet($("log-sheet").hidden));
+$("log-close").addEventListener("click", () => setSheet(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("log-sheet").hidden) setSheet(false); });
 
 function anchorFor(it) {
   const wd = it.device_id && world?.devices[it.device_id];
@@ -985,7 +996,7 @@ function showBalloon(it) {
   if (!world) return;
   const pos = anchorFor(it);
   const decision = it.kind === "decision";
-  const inner = el("div", null, el("b", null, `${decision ? it.agent : it.area}: `), it.message);
+  const inner = el("div", null, el("b", null, `${decision ? it.agent : it.area}: `), plain(it.message || ""));
   const outer = el("div", "balao", inner);
   outer.style.setProperty("--area", areaColor(areaOf(it)));
   const obj = new CSS2DObject(outer);
@@ -1021,10 +1032,6 @@ function removeBalloon(b) {
 
 // ------------------------------------------------------------------ data: SSE with polling fallback
 let lastMessage = 0;
-function setConnection(ok, text) {
-  $("ligacao").className = "ligacao " + (ok ? "ok" : "erro");
-  $("ligacao-texto").textContent = text;
-}
 function onSnapshot(st) {
   applyState(st);
   addTimeline([...(st.events || []), ...(st.decisions || [])], { animate: false });
@@ -1038,9 +1045,9 @@ async function poll() {
     const hadWorld = world != null;  // the first poll is history, not news
     applyState(st);
     addTimeline(fresh, { animate: hadWorld });
-    setConnection(true, `atualização periódica · ${hhmmss(st.ts)}`);
+    setConnection(true, `atualizado ${hhmm(st.ts)}`);
   } catch (err) {
-    setConnection(false, `sem dados: ${err.message}`);
+    setConnection(false, "sem ligação");
   }
 }
 function connect() {
@@ -1052,11 +1059,11 @@ function connect() {
     touch();
     const st = JSON.parse(e.data);
     applyState(st);
-    setConnection(true, `em direto · ${hhmmss(st.ts)}`);
+    setConnection(true, `em direto · ${hhmm(st.ts)}`);
   });
   es.addEventListener("event", (e) => { touch(); addTimeline([JSON.parse(e.data)], { animate: true }); });
   es.addEventListener("decision", (e) => { touch(); addTimeline([JSON.parse(e.data)], { animate: true }); });
-  es.onerror = () => setConnection(false, "ligação perdida, a tentar de novo…");
+  es.onerror = () => setConnection(false, "a religar…");
   // if the stream stays silent (proxy, sleep, server restart), fall back to polling every 2 s
   setInterval(() => { if (Date.now() - lastMessage > STREAM_STALE_MS) poll(); }, POLL_FALLBACK_MS);
 }
@@ -1077,8 +1084,8 @@ function animate() {
     for (const op of Object.values(world.openings)) op.pivot.rotation.y += (op.target - op.pivot.rotation.y) * Math.min(1, dt * 5);
     const alarm = current.alarm.any;
     const pulse = 0.5 + 0.5 * Math.sin(t * 6);
-    world.edgeMat.color.set(alarm ? 0xff4a4a : 0x8591a6);
-    world.edgeMat.opacity = alarm ? 0.45 + 0.55 * pulse : 0.55;
+    world.edgeMat.color.set(alarm ? C.bad : C.ink);
+    world.edgeMat.opacity = alarm ? 0.45 + 0.55 * pulse : 0.6;
     for (const wr of Object.values(world.rooms)) {
       if (!wr.smoke) continue;
       wr.fog.material.opacity = 0.08 + 0.2 * pulse;
@@ -1101,8 +1108,8 @@ function animate() {
       }
       if (wd.ledMat && wd.alarm) wd.ledMat.color.set(pulse > 0.5 ? 0xff2a2a : 0x330000);
       if (wd.coneMat) {
-        wd.coneMat.color.set(wd.active ? 0xfab219 : 0x8fb4e8);
-        wd.coneMat.opacity = wd.data.online ? (wd.active ? 0.16 + 0.12 * pulse : 0.08) : 0.03;
+        wd.coneMat.color.set(wd.active ? C.signal : C.blue);
+        wd.coneMat.opacity = wd.data.online ? (wd.active ? 0.14 + 0.1 * pulse : 0.07) : 0.03;
       }
     }
   }

@@ -1,0 +1,228 @@
+/* Tico&Tech design system: "Instrumento".
+   Warm paper, near-black ink, one signal colour. Hierarchy comes from size and space, not from boxes:
+   hairline rules separate things, surfaces are flat, numbers read like a measuring instrument.
+   Light on purpose: it reads well on a projector and keeps the 3D house legible. */
+
+:root {
+  color-scheme: light;
+  /* surfaces */
+  --paper: #f2f0eb;      /* page */
+  --sheet: #fbfaf8;      /* raised: rails, panels, cards that hold controls */
+  --sunk: #e8e5de;       /* hover, inputs, pressed */
+  --rule: #dcd8cf;       /* hairlines */
+  --rule-2: #c4bfb3;     /* control borders */
+  /* ink */
+  --ink: #18181b;
+  --ink-2: #44444a;
+  --ink-3: #69665f;      /* muted text, 4.6:1 on --paper */
+  /* the one signal colour: attention, the thing to look at now */
+  --signal: #e2531b;
+  --signal-ink: #b23f0d;
+  --signal-bg: #fbe9df;
+  /* status: always with a word next to it */
+  --ok: #2c7a4b;
+  --ok-bg: #e3f0e6;
+  --warn: #9a5b00;
+  --warn-dot: #d48a0b;
+  --warn-bg: #f8edd6;
+  --bad: #bf3328;
+  --bad-bg: #f9e1dd;
+  /* agent identity (categorical; never ranked) */
+  --a-conforto: #2c62b4;
+  --a-energia: #11806f;
+  --a-seguranca: #c4501c;
+  --a-emergencia: #bf3328;
+  --a-coordenador: #18181b;
+  --a-sistema: #8a877f;
+  /* type */
+  --f-ui: "Instrument Sans", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --f-num: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* shape */
+  --r-1: 4px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --shadow-1: 0 1px 2px rgb(24 24 27 / .06), 0 4px 12px rgb(24 24 27 / .05);
+  --shadow-2: 0 2px 6px rgb(24 24 27 / .08), 0 18px 40px rgb(24 24 27 / .12);
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --shell-h: 60px;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.5 var(--f-ui);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.01em; text-wrap: balance; }
+p { margin: 0; }
+a { color: inherit; }
+.num { font-family: var(--f-num); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.muted { color: var(--ink-3); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+[hidden] { display: none !important; }
+
+.skip {
+  position: absolute; left: 12px; top: -60px; z-index: 100; padding: 10px 14px; border-radius: var(--r-2);
+  background: var(--ink); color: var(--paper); text-decoration: none; font-weight: 600;
+}
+.skip:focus { top: 10px; }
+
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+/* ------------------------------------------------------------------ icons */
+.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75;
+     stroke-linecap: round; stroke-linejoin: round; display: inline-block; vertical-align: middle; }
+.i-sm { width: 15px; height: 15px; }
+.i-lg { width: 22px; height: 22px; }
+
+/* ------------------------------------------------------------------ buttons
+   One family: .btn (sheet), .btn.primary (ink), .btn.quiet (text). Step up on hover, press on click. */
+button { font: inherit; color: inherit; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 38px; padding: 0 14px; border-radius: var(--r-2);
+  font: 500 14px/1 var(--f-ui); color: var(--ink); text-decoration: none; white-space: nowrap;
+  background: var(--sheet); border: 1px solid var(--rule-2); cursor: pointer;
+  transition: background .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease);
+}
+.btn:hover:not(:disabled) { background: #fff; border-color: var(--ink-3); transform: translateY(-1px); box-shadow: var(--shadow-1); }
+.btn:active:not(:disabled) { transform: translateY(0) scale(.98); box-shadow: none; transition-duration: .05s; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn.primary:hover:not(:disabled) { background: #000; border-color: #000; }
+.btn.signal { background: var(--signal); color: #fff; border-color: var(--signal); }
+.btn.signal:hover:not(:disabled) { background: var(--signal-ink); border-color: var(--signal-ink); }
+.btn.quiet { background: transparent; border-color: transparent; }
+.btn.quiet:hover:not(:disabled) { background: var(--sunk); border-color: transparent; box-shadow: none; }
+.btn.sm { min-height: 32px; padding: 0 10px; font-size: 13px; }
+.btn.icon-only { width: 38px; padding: 0; }
+.btn.sm.icon-only { width: 32px; }
+
+/* links that draw their underline */
+.link { text-decoration: none; background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat;
+        transition: background-size .25s var(--ease); }
+.link:hover { background-size: 100% 1px; }
+
+/* ------------------------------------------------------------------ status marks
+   A state is a small mark + a word. No pills. */
+.mark { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.mark::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--ink-3)); flex: none; }
+.mark.ok { --c: var(--ok); }
+.mark.warn { --c: var(--warn-dot); }
+.mark.bad { --c: var(--bad); }
+.mark.signal { --c: var(--signal); }
+.mark.idle { --c: transparent; }
+.mark.idle::before { box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+
+/* agent identity marker: square; the Coordinator a diamond */
+.agent-id { width: 9px; height: 9px; border-radius: 2px; background: var(--area, var(--a-sistema)); flex: none; display: inline-block; }
+.agent-id.coord { transform: rotate(45deg) scale(.85); }
+
+/* small outlined tag, used sparingly (simulated room, dry-run) */
+.tag { display: inline-flex; align-items: center; gap: 5px; font: 500 12px/1 var(--f-ui); color: var(--ink-2);
+       padding: 4px 7px; border: 1px solid var(--rule-2); border-radius: var(--r-1); white-space: nowrap; }
+
+/* ------------------------------------------------------------------ shell (same on every page)
+   Type only: a wordmark, text links, one short line of state. Flat paper, one hairline. The alarm
+   band under it is the only loud thing; the shell itself never shouts. */
+.shell {
+  position: sticky; top: 0; z-index: 30; height: var(--shell-h);
+  display: flex; align-items: center; gap: 0; padding: 0 max(32px, env(safe-area-inset-right)) 0 max(32px, env(safe-area-inset-left));
+  background: var(--paper); border-bottom: 1px solid var(--rule);
+}
+.brand { display: inline-flex; align-items: center; min-height: 44px; text-decoration: none; color: var(--ink); flex: none; }
+.wordmark { font-size: 19px; font-weight: 700; letter-spacing: -.035em; }
+.wordmark .amp { color: var(--signal); font-weight: 600; margin: 0 .04em; }
+.home { font-size: 14px; color: var(--ink-3); padding-left: 14px; margin-left: 14px; border-left: 1px solid var(--rule-2); white-space: nowrap; }
+.home:empty { display: none; }
+
+.nav { display: flex; align-items: stretch; align-self: stretch; gap: 26px; margin-left: 44px; }
+.nav a, .nav button {
+  display: inline-flex; align-items: center; height: 100%; padding: 0; position: relative;
+  font: 500 15px/1 var(--f-ui); color: var(--ink-3); text-decoration: none; white-space: nowrap;
+  background: none; border: 0; cursor: pointer; transition: color .15s var(--ease);
+}
+.nav a::after, .nav button::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--ink);
+                                     transform: scaleX(0); transform-origin: left; transition: transform .25s var(--ease); }
+.nav a:hover, .nav button:hover { color: var(--ink); }
+.nav a:hover::after, .nav button:hover::after { transform: scaleX(.35); }
+.nav a[aria-current="page"] { color: var(--ink); }
+.nav a[aria-current="page"]::after { transform: scaleX(1); }
+
+/* the state line: words with a small dot, separated by space; nothing is a pill */
+.shell-status { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 14px; color: var(--ink-2); min-width: 0; }
+.st { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--ink-2); text-decoration: none; }
+.st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--ink-3)); flex: none; }
+.st.ok { --c: var(--ok); }
+.st.warn { --c: var(--warn-dot); }
+.st.bad { --c: var(--bad); color: var(--bad); font-weight: 600; }
+.st.idle::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+a.st { min-height: 44px; }
+a.st:hover { color: var(--ink); }
+.st-agents b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.st-mode { color: var(--ink-3); }
+.st-mode::before { display: none; }
+.conn { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-3); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.conn .dot { position: relative; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.conn.ok .dot { background: var(--ok); }
+.conn.ok .dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--ok); animation: ping 2.4s var(--ease) 3; }
+.conn.erro { color: var(--bad); }
+.conn.erro .dot { background: var(--bad); }
+@keyframes ping { 0% { transform: scale(1); opacity: .8; } 80%, 100% { transform: scale(2.6); opacity: 0; } }
+@keyframes blink { to { opacity: .25; } }
+
+/* menu (phone): the button, then a full-screen sheet */
+.menu-btn { display: none; margin-left: auto; min-height: 44px; padding: 0 14px; border: 1px solid var(--rule-2); border-radius: var(--r-2);
+            background: var(--sheet); font: 600 14px/1 var(--f-ui); color: var(--ink); cursor: pointer; touch-action: manipulation; gap: 8px; align-items: center; }
+.menu-btn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--ok)); }
+.menu-btn.bad { --c: var(--bad); }
+.menu-btn.warn { --c: var(--warn-dot); }
+.menu { position: fixed; inset: var(--shell-h) 0 0; z-index: 29; overflow: auto; overscroll-behavior: contain; background: var(--paper);
+        padding: 24px max(16px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+        animation: menu-in .25s var(--ease); }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-6px); } }
+.menu-nav { display: flex; flex-direction: column; border-top: 1px solid var(--ink); }
+.menu-nav a, .menu-nav button { display: flex; align-items: center; min-height: 64px; border: 0; border-bottom: 1px solid var(--rule); background: none;
+  font: 600 28px/1 var(--f-ui); letter-spacing: -.03em; color: var(--ink-3); text-decoration: none; text-align: left; padding: 0; cursor: pointer; }
+.menu-nav a[aria-current="page"] { color: var(--ink); }
+.menu-state { margin: 32px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 0 20px; font-size: 15px; }
+.menu-state dt { color: var(--ink-3); padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.menu-state dd { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--rule); color: var(--ink); text-align: right; }
+body.menu-open { overflow: hidden; }
+
+@media (max-width: 1280px) { .home { display: none; } .nav { margin-left: 36px; } }
+@media (max-width: 1100px) { .st-mode { display: none; } .nav { gap: 20px; } }
+@media (max-width: 960px) {
+  .st-agents { display: none; }
+  .shell-status { gap: 16px; }
+  .conn #conn-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+@media (max-width: 680px) {
+  .shell { padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left)); }
+  .nav { display: none; }
+  .menu-btn { display: inline-flex; }
+}
+
+/* alarm band: one full-width strip under the shell; the way out is right there */
+.alarm-band { display: flex; align-items: center; gap: 16px; padding: 12px 24px; background: var(--bad); color: #fff; }
+.alarm-band .i { width: 22px; height: 22px; animation: blink 1s steps(2, start) infinite; }
+.alarm-band strong { font-size: 16px; font-weight: 600; }
+.alarm-band span { opacity: .9; font-size: 14px; }
+.alarm-band .grow { flex: 1; display: flex; flex-wrap: wrap; gap: 2px 14px; align-items: baseline; min-width: 0; }
+.alarm-band .btn { background: #fff; color: var(--bad); border-color: #fff; font-weight: 600; }
+
+/* entrance: once, on load */
+@keyframes enter { from { opacity: 0; transform: translateY(8px); } }
+[data-enter] > * { animation: enter .55s var(--ease) both; }
+[data-enter] > *:nth-child(2) { animation-delay: .06s; }
+[data-enter] > *:nth-child(3) { animation-delay: .12s; }
+[data-enter] > *:nth-child(4) { animation-delay: .18s; }
+[data-enter] > *:nth-child(5) { animation-delay: .24s; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

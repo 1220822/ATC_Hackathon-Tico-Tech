@@ -3,121 +3,169 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Casa por divisões</title>
-<style>
-  :root {
-    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #677085; --line: #e3e6ec;
-    --ok: #1f9d55; --bad: #d64545; --warn: #c27c0e; --tag: #eef1ff; --tag-text: #3b4fc4;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #14171d; --card: #1d212a; --text: #e6e9ef; --muted: #98a1b3; --line: #2d3340;
-            --ok: #3ccf7f; --bad: #ff6b6b; --warn: #f0b44c; --tag: #2a3060; --tag-text: #b9c3ff; }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
-         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; max-width: 1100px;
-           margin: 0 auto 16px; }
-  h1 { font-size: 20px; margin: 0; }
-  .meta { color: var(--muted); font-size: 13px; }
-  #erro { display: none; max-width: 1100px; margin: 0 auto 12px; padding: 8px 12px; border-radius: 8px;
-          background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
-  #grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-          max-width: 1100px; margin: 0 auto; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .head h2 { font-size: 17px; margin: 0; flex: 1; }
-  .tag { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
-         background: var(--tag); color: var(--tag-text); padding: 2px 7px; border-radius: 99px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
-  .dot.on { background: var(--ok); } .dot.off { background: var(--bad); }
-  .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 10px; }
-  dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; }
-  .alert { color: var(--warn); font-weight: 600; }
-  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px;
-            border: 1px solid var(--line); margin-right: 4px; }
-  ul { list-style: none; padding: 8px 0 0; margin: 0; border-top: 1px solid var(--line); font-size: 13px; }
-  li { display: flex; align-items: center; gap: 6px; padding: 2px 0; color: var(--muted); }
-</style>
+<title>Visão geral · Tico&amp;Tech</title>
+<meta name="description" content="A casa por divisões: estado, energia e o que os agentes estão a decidir, em tempo real.">
+<meta name="theme-color" content="#f2f0eb">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/app/theme.css">
+<link rel="stylesheet" href="/static/app/overview.css">
+<link rel="stylesheet" href="/chat/ui/chat.css">
 </head>
 <body>
-<header>
-  <h1>Casa por divisões</h1>
-  <span class="meta" id="energia"></span>
-  <span class="meta" id="hora"></span>
+<a class="skip" href="#main">Saltar para o conteúdo</a>
+<header class="shell">
+  <a class="brand" href="/" aria-label="Tico&amp;Tech, visão geral"><span class="wordmark" translate="no">Tico<span class="amp">&amp;</span>Tech</span></a>
+  <nav class="nav" aria-label="Secções">
+    <a href="/" aria-current="page">Visão geral</a>
+    <a href="/twin">Casa 3D</a>
+    <a href="/conhecimento">O que a casa sabe</a>
+  </nav>
+  <div class="shell-status">
+    <a class="st st-agents" id="agents" href="/#act-h">Agentes</a>
+    <span class="st" id="sec">…</span>
+    <span class="st st-mode" id="mode" hidden></span>
+    <span class="conn" id="conn"><span class="dot" aria-hidden="true"></span><span id="conn-text">a ligar…</span></span>
+  </div>
+  <button type="button" class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="menu">Menu</button>
 </header>
-<div id="erro"></div>
-<main id="grid"></main>
-<script>
-const nf1 = new Intl.NumberFormat("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-const nf0 = new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 });
-const nf3 = new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 3 });
+<!-- phone: a full-screen menu with the navigation and the whole state of the house -->
+<div class="menu" id="menu" hidden>
+  <nav class="menu-nav" aria-label="Secções">
+    <a href="/" aria-current="page">Visão geral</a>
+    <a href="/twin">Casa 3D</a>
+    <a href="/conhecimento">O que a casa sabe</a>
+  </nav>
+  <dl class="menu-state" id="menu-state"></dl>
+</div>
+<div class="alarm-band" id="alarm" role="alert" hidden>
+  <svg data-icon="alert"></svg>
+  <div class="grow"><strong id="alarm-title">A casa está em alarme</strong><span id="alarm-sub"></span></div>
+  <button type="button" class="btn" id="alarm-off">Desligar alarme</button>
+</div>
 
-function el(tag, attrs = {}, ...children) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) k === "class" ? e.className = v : e.setAttribute(k, v);
-  for (const c of children) if (c != null) e.append(c);  // strings become text nodes (no HTML)
-  return e;
-}
+<main id="main">
+  <!-- Full-bleed hero: the house's photograph is the ground; the words sit on its calm, darkened left
+       side; live readouts are pinned on the frame (.hero-frame reproduces object-fit: cover, so a pin
+       stays on its object at every width). The photograph is a stand-in: swap in one of the demo room. -->
+  <section class="hero" aria-labelledby="headline">
+    <div class="hero-media">
+      <div class="hero-frame">
+        <img src="/static/app/img/sala-1920.jpg"
+             srcset="/static/app/img/sala-960.jpg 960w, /static/app/img/sala-1920.jpg 1920w"
+             sizes="(max-width: 760px) 280vw, 120vw" width="1920" height="1281"
+             alt="Sala com sofá, mesa de centro e uma porta de vidro para a varanda" fetchpriority="high"
+             data-source="stand-in" data-subject="sala">
+        <div class="pin" id="pin-window" style="--x: 48%; --y: 45%" hidden>
+          <span class="pin-dot" aria-hidden="true"></span>
+          <span class="pin-card"><span class="pin-k" id="pin-window-k">Janela da Sala</span><span class="pin-v" id="pin-window-v">…</span></span>
+        </div>
+        <div class="pin left" id="pin-power" style="--x: 80%; --y: 30%" hidden>
+          <span class="pin-dot" aria-hidden="true"></span>
+          <span class="pin-card"><span class="pin-k">Potência da casa</span><span class="pin-v" id="pin-power-v">…</span></span>
+        </div>
+      </div>
+    </div>
+    <div class="hero-inner">
+      <div class="hero-copy" data-enter>
+        <p class="hero-date"><span class="conn-dot" aria-hidden="true"></span><span id="today"></span></p>
+        <h1 id="headline" aria-live="polite">A ler a casa…</h1>
+        <p class="hero-lede" id="lede"></p>
+        <div class="hero-actions">
+          <a class="btn hero-primary" href="/twin">Abrir a casa em 3D <svg data-icon="arrow"></svg></a>
+          <a class="btn hero-ghost" href="/conhecimento">O que a casa sabe de ti</a>
+        </div>
+      </div>
+    </div>
+  </section>
 
-function rows(s, setpoint) {
-  const out = [];
-  if ("temperatura_c" in s) {
-    let t = s.temperatura_c == null ? "—" : nf1.format(s.temperatura_c) + " °C";
-    if (setpoint != null) t += `  (alvo ${nf1.format(setpoint)} °C)`;
-    out.push(["Temperatura", t]);
-    out.push(["Humidade", s.humidade_pct == null ? "—" : nf0.format(s.humidade_pct) + " %"]);
-  }
-  if ("janela_aberta" in s)
-    out.push(["Janela", s.janela_aberta ? el("span", { class: "alert" }, "Aberta") : "Fechada"]);
-  if ("aquecedor_ligado" in s)
-    out.push(["Aquecedor", (s.aquecedor_ligado ? "Ligado" : "Desligado") +
-      (s.aquecedor_potencia_w != null ? ` · ${nf0.format(s.aquecedor_potencia_w)} W` : "")]);
-  if (s.luz) {
-    const c = s.luz.cor ? `rgb(${s.luz.cor.join(",")})` : "transparent";
-    out.push(["Luz", el("span", {}, el("span", { class: "swatch", style: `background:${c}` }),
-      s.luz.power === "on" ? `Ligada · ${s.luz.brilho ?? "—"} %` : "Desligada")]);
-  }
-  return out;
-}
+  <div class="ov">
+  <!-- Energy and comfort, right now: one dominant figure with its real chart (power, 6 h, from zero),
+       and the other readings as a typed list on hairlines. No tiles, no icons per number. -->
+  <section class="now" aria-labelledby="now-h">
+    <header class="block-head">
+      <h2 id="now-h">Energia e conforto</h2>
+      <span class="muted" id="now-ts"></span>
+    </header>
+    <div class="now-grid">
+      <div class="now-power">
+        <p class="now-label">Potência agora</p>
+        <p class="now-figure"><span id="k-power">…</span><span class="unit">W</span></p>
+        <p class="now-foot" id="k-power-foot">A ler o histórico das últimas 6 horas…</p>
+        <div class="chart" id="k-power-spark"></div>
+      </div>
+      <dl class="now-list">
+        <div class="now-row">
+          <dt>Consumo de ontem</dt>
+          <dd><span class="now-v"><span id="k-yday">…</span><span class="unit">kWh</span></span><span class="now-f" id="k-yday-foot"></span></dd>
+        </div>
+        <div class="now-row">
+          <dt>Temperatura média</dt>
+          <dd><span class="now-v"><span id="k-temp">…</span><span class="unit">°C</span></span><span class="now-f" id="k-temp-foot"></span></dd>
+        </div>
+        <div class="now-row" id="k-pending-box">
+          <dt>À tua espera</dt>
+          <dd><span class="now-v"><span id="k-pending">…</span><span class="unit" id="k-pending-unit">decisões</span></span><a class="now-f link" id="k-pending-foot" href="/twin">Nada à espera de ti</a></dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+  <!-- Rooms: a ledger, one row per room and one column per reading, so rooms compare at a glance.
+       A real table (headers, scope); on a phone each row becomes a block of label + value. -->
+  <section class="block rooms-sec" aria-labelledby="rooms-h">
+    <header class="block-head">
+      <h2 id="rooms-h">Divisões</h2>
+      <a class="link muted" href="/twin">Ver cada divisão na casa 3D</a>
+    </header>
+    <table class="ledger" aria-labelledby="rooms-h">
+      <thead>
+        <tr>
+          <th scope="col">Divisão</th>
+          <th scope="col">Temperatura</th>
+          <th scope="col" class="n">Humidade</th>
+          <th scope="col">Janela</th>
+          <th scope="col">Aquecedor</th>
+          <th scope="col">Luz</th>
+          <th scope="col" class="trend-h">Últimas 12 h</th>
+        </tr>
+      </thead>
+      <tbody id="rooms"><tr class="ledger-empty"><td colspan="7">A ler as divisões…</td></tr></tbody>
+    </table>
+    <div id="erro" class="ov-error" role="alert" hidden></div>
+  </section>
 
-function card(r) {
-  const offline = r.offline.length;
-  const status = el("span", { class: "status" }, el("span", { class: "dot " + (offline ? "off" : "on") }),
-    offline ? `${offline} offline` : "online");
-  const dl = el("dl");
-  for (const [k, v] of rows(r.sensores, r.setpoint_c)) dl.append(el("dt", {}, k), el("dd", {}, v));
-  const ul = el("ul");
-  for (const d of r.dispositivos)
-    ul.append(el("li", { title: d.online ? "online" : "offline" },
-      el("span", { class: "dot " + (d.online ? "on" : "off") }), d.nome));
-  return el("section", { class: "card" },
-    el("div", { class: "head" }, el("h2", {}, r.nome), r.simulado ? el("span", { class: "tag" }, "simulado") : null, status),
-    dl, ul);
-}
+  <!-- The agents: who they are (the team, each one a filter) and what they decided, newest first.
+       Only the Coordinator writes to the house; the others propose. -->
+  <section class="block agents-sec" aria-labelledby="act-h">
+    <header class="block-head">
+      <h2 id="act-h">O que os agentes estão a fazer</h2>
+      <a class="link muted" href="/twin">Ver a linha do tempo completa</a>
+    </header>
+    <div class="agents-grid">
+      <div class="team" role="group" aria-label="Filtrar a atividade por agente">
+        <button type="button" class="member" data-agent="Todos" aria-pressed="true">
+          <span class="member-name">Todos os agentes</span>
+          <span class="member-role">Tudo o que a casa viu e decidiu</span>
+        </button>
+        <div id="team"></div>
+      </div>
+      <div class="feed-wrap">
+        <ol class="feed" id="activity" aria-live="polite"></ol>
+        <p class="feed-empty" id="feed-empty">Quando uma janela abrir, a temperatura fugir do alvo ou o consumo mudar, as propostas e decisões dos agentes aparecem aqui, com a resposta do Coordenador.</p>
+      </div>
+    </div>
+  </section>
+  </div>
+</main>
+<footer class="ov-foot">
+  <span><span translate="no">Tico&amp;Tech</span> · Aveiro City Hackathon 2026</span>
+  <span>Fotografia: <a class="link" href="https://commons.wikimedia.org/wiki/File:Modern_living_room_with_stylish_furniture_and_a_view_of_the_outdoors_in_a_cozy_apartment_setting.jpg" rel="noopener" target="_blank">Shixart1985</a>, <a class="link" href="https://creativecommons.org/licenses/by/2.0" rel="noopener" target="_blank">CC BY 2.0</a></span>
+</footer>
 
-async function refresh() {
-  const erro = document.getElementById("erro");
-  try {
-    const [rooms, energy] = await Promise.all(["/rooms", "/home/energy"].map(async u => {
-      const res = await fetch(u);
-      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-      return res.json();
-    }));
-    document.getElementById("grid").replaceChildren(...rooms.map(card));
-    let e = `Potência agora: ${nf0.format(energy.potencia_total_w)} W`;
-    if (energy.consumo_ontem_kwh != null) e += ` · Consumo ontem: ${nf3.format(energy.consumo_ontem_kwh)} kWh`;
-    document.getElementById("energia").textContent = e;
-    document.getElementById("hora").textContent = "Atualizado às " + new Date().toLocaleTimeString("pt-PT");
-    erro.style.display = "none";
-  } catch (err) {
-    erro.textContent = "Sem dados: " + err.message;
-    erro.style.display = "block";
-  }
-}
-refresh();
-setInterval(refresh, 3000);
-</script>
+<template id="t-sim"><span class="sim" data-kind="simulado">divisão simulada</span></template>
+
+<script type="module" src="/static/app/overview.js"></script>
+<script type="module" src="/chat/ui/knowledge.js"></script>
 </body>
 </html>

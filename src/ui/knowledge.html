@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>O que a casa sabe de ti · Tico&amp;Tech</title>
+<meta name="description" content="Cada preferência, regra e decisão que a casa guardou, com a frase em que a disseste. Muda, revoga ou apaga.">
+<meta name="theme-color" content="#f2f0eb">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/app/theme.css">
+<link rel="stylesheet" href="/static/app/overview.css">
+<link rel="stylesheet" href="/static/app/knowledge.css">
+</head>
+<body class="kn-page">
+<a class="skip" href="#main">Saltar para o conteúdo</a>
+<header class="shell">
+  <a class="brand" href="/" aria-label="Tico&amp;Tech, visão geral"><span class="wordmark" translate="no">Tico<span class="amp">&amp;</span>Tech</span></a>
+  <span class="home" id="home-name"></span>
+  <nav class="nav" aria-label="Secções">
+    <a href="/">Visão geral</a>
+    <a href="/twin">Casa 3D</a>
+    <a href="/conhecimento" aria-current="page">O que a casa sabe</a>
+  </nav>
+  <div class="shell-status">
+    <a class="st st-agents" id="agents" href="/#act-h">Agentes</a>
+    <span class="st" id="sec">…</span>
+    <span class="st st-mode" id="mode" hidden></span>
+    <span class="conn" id="conn"><span class="dot" aria-hidden="true"></span><span id="conn-text">a ligar…</span></span>
+  </div>
+  <button type="button" class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="menu">Menu</button>
+</header>
+<div class="menu" id="menu" hidden>
+  <nav class="menu-nav" aria-label="Secções">
+    <a href="/">Visão geral</a>
+    <a href="/twin">Casa 3D</a>
+    <a href="/conhecimento" aria-current="page">O que a casa sabe</a>
+  </nav>
+  <dl class="menu-state" id="menu-state"></dl>
+</div>
+<div class="alarm-band" id="alarm" role="alert" hidden>
+  <svg data-icon="alert"></svg>
+  <div class="grow"><strong id="alarm-title">A casa está em alarme</strong><span id="alarm-sub"></span></div>
+  <button type="button" class="btn" id="alarm-off">Desligar alarme</button>
+</div>
+
+<main id="main">
+  <!-- Hero: the words on the right this time (the photograph's calm side), The photograph is a stand-in. -->
+  <section class="hero hero--right" aria-labelledby="kn-h1">
+    <div class="hero-media">
+      <div class="hero-frame">
+        <img src="/static/app/img/termostato-1920.jpg"
+             srcset="/static/app/img/termostato-960.jpg 960w, /static/app/img/termostato-1920.jpg 1920w"
+             sizes="(max-width: 760px) 280vw, 120vw" width="1920" height="1281"
+             alt="Mão a carregar no botão de um termóstato numa parede iluminada ao fim do dia" fetchpriority="high"
+             data-source="stand-in" data-subject="termostato">
+      </div>
+    </div>
+    <div class="hero-inner">
+      <div class="hero-copy" data-enter>
+        <p class="hero-date"><span class="conn-dot" aria-hidden="true"></span><span>Guardado só nesta casa, num ficheiro local</span></p>
+        <h1 id="kn-h1">O que a casa sabe de ti.</h1>
+        <p class="hero-lede" id="kn-lede">Cada preferência, regra e decisão que a casa guardou, com a frase em que a disseste. Podes mudar, revogar ou apagar tudo.</p>
+        <div class="hero-actions">
+          <a class="btn hero-primary" href="#temperaturas">Ver as preferências <svg data-icon="arrow"></svg></a>
+          <a class="btn hero-ghost" href="#apagar">Apagar o que sabe</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="ov kn">
+    <div id="kn-erro" class="ov-error" role="alert" hidden></div>
+
+    <!-- Target temperatures: one row per room, an instrument rule (14-26 °C) with the target you drag and
+         the temperature now; the stretch between them says whether the house will heat. -->
+    <section class="block" id="temperaturas" aria-labelledby="temp-h">
+      <header class="block-head">
+        <h2 id="temp-h">Temperatura alvo</h2>
+        <span class="muted" id="kn-temps-hint">Arrasta o ponto ou usa as setas do teclado</span>
+      </header>
+      <div class="kn-rooms" id="kn-temps"><p class="kn-empty">A ler o que a casa sabe…</p></div>
+    </section>
+
+    <section class="block" id="autonomia" aria-labelledby="aut-h">
+      <header class="block-head">
+        <h2 id="aut-h">O que a casa faz sozinha</h2>
+        <span class="muted">A emergência (fumo, intrusão) segue sempre o caminho fixo</span>
+      </header>
+      <p class="kn-temps-note" id="kn-aut-note" hidden></p>
+      <div class="kn-aut" id="kn-aut"></div>
+    </section>
+
+    <section class="block" id="preferencias" aria-labelledby="pref-h">
+      <div class="kn-two">
+        <div>
+          <header class="block-head"><h2 id="pref-h">As tuas preferências</h2></header>
+          <ul class="kn-list" id="kn-prefs"></ul>
+        </div>
+        <div>
+          <header class="block-head"><h2 id="rules-h">Regras</h2></header>
+          <ul class="kn-list" id="kn-rules"></ul>
+        </div>
+      </div>
+      <div id="kn-muted-wrap" hidden>
+        <header class="block-head kn-sub"><h3 id="muted-h">Sugestões silenciadas</h3></header>
+        <ul class="kn-list" id="kn-muted"></ul>
+      </div>
+    </section>
+
+    <section class="block" id="historico" aria-labelledby="hist-h">
+      <details class="kn-hist">
+        <summary><h2 id="hist-h">Histórico de alterações</h2><span class="muted" id="kn-hist-n"></span></summary>
+        <ul class="kn-list" id="kn-hist"></ul>
+      </details>
+      <p class="kn-note" id="kn-note"></p>
+    </section>
+
+    <section class="block kn-danger" id="apagar" aria-labelledby="del-h">
+      <header class="block-head"><h2 id="del-h">Apagar tudo o que a casa sabe</h2></header>
+      <div class="kn-danger-grid">
+        <div>
+          <p>Apaga as preferências, as regras (e desativa os cenários que criaram na casa), as sugestões, as decisões e a conversa.</p>
+          <p class="muted">Fica o histórico dos sensores, que não diz nada sobre ti.</p>
+        </div>
+        <form class="kn-erase" id="kn-erase" novalidate>
+          <label for="kn-erase-input">Escreve <b>APAGAR</b> para confirmar</label>
+          <div class="kn-erase-row">
+            <input id="kn-erase-input" name="confirmar" autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="APAGAR">
+            <button type="submit" class="btn kn-erase-btn" disabled>Apagar tudo</button>
+          </div>
+          <p class="kn-erase-msg" id="kn-erase-msg" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+    </section>
+  </div>
+</main>
+<footer class="ov-foot">
+  <span><span translate="no">Tico&amp;Tech</span> · Aveiro City Hackathon 2026</span>
+  <span>Fotografia: <a class="link" href="https://commons.wikimedia.org/wiki/File:Adjusting_the_temperature_on_a_thermostat_in_a_home_setting.jpg" rel="noopener" target="_blank">Shixart1985</a>, <a class="link" href="https://creativecommons.org/licenses/by/2.0" rel="noopener" target="_blank">CC BY 2.0</a></span>
+</footer>
+<script type="module" src="/static/app/knowledge-page.js"></script>
+</body>
+</html>

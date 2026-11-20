@@ -1,0 +1,1 @@
+2026-11-20T12:08:34Z gate.mjs not found; CLAUDE_PLUGIN_ROOT=C:/Users/santi/AppData/Local/Claude-Data/claude_pzs8sxrjxfjjc/rpm/7274a8bd/7e5346a6/plugin_01KcmZqjG9o5QcBa3DJE2ovk CLAUDE_PROJECT_DIR=C:/Users/santi/Desktop/ATC_Hackathon-Tico-Tech HOME=/c/Users/santi

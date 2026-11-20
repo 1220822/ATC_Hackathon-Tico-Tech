@@ -1,125 +1,140 @@
-/* Chat with the Coordinator. Uses the page's tokens (twin.css); the fallbacks keep it usable on its own. */
-.tt-chat { --c-bg: var(--panel, #121821); --c-bg2: var(--panel-2, #19212c); --c-bg3: var(--panel-3, #212a37);
-           --c-line: var(--line, #243040); --c-line2: var(--line-strong, #34425a);
-           --c-text: var(--text, #e6ebf3); --c-text2: var(--text-2, #b6c0cf); --c-muted: var(--muted, #8591a6);
-           --c-ok: var(--ok, #0ca30c); --c-warn: var(--warn, #fab219); --c-bad: var(--bad, #d03b3b);
-           --c-user: #24324a;
-           display: flex; flex-direction: column; min-height: 0; height: 100%; background: var(--c-bg);
-           color: var(--c-text); font: 14px/1.45 var(--font-ui, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif); }
-.tt-chat-topo { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--c-line); }
-.tt-chat-topo h2 { font: 600 15px/1.2 var(--font-display, inherit); margin: 0; flex: 1; min-width: 0; }
-.tt-chat-topo h2::before { content: ""; display: inline-block; width: 8px; height: 8px; margin: 0 9px 1px 1px;
-                           transform: rotate(45deg); background: var(--a-coordenador, #cdd6e6); border-radius: 2px; }
-.tt-chat-topo h2 small { display: block; margin-top: 2px; font: 400 11px/1.3 var(--font-ui, inherit); color: var(--c-muted); }
-.tt-chat button { font: inherit; font-size: 12px; font-weight: 500; color: var(--c-text); background: var(--c-bg2);
-                  border: 1px solid var(--c-line2); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
-.tt-chat button:hover:not(:disabled) { background: var(--c-bg3); border-color: var(--c-muted); }
-.tt-chat button:disabled { opacity: .45; cursor: default; }
-.tt-chat button:focus-visible { outline: 2px solid var(--c-text2); outline-offset: 2px; }
+/* Chat with the Coordinator. A transcript, not a stack of bubbles: the Coordinator writes on the
+   paper, you write in a light bubble on the right; only what waits for an answer is a card, and an
+   answered card folds to a line. Built on theme.css tokens. */
+.tt-chat { display: flex; flex-direction: column; min-height: 0; height: 100%; background: var(--paper); color: var(--ink);
+           font: 15px/1.55 var(--f-ui); }
+.tt-chat button { font: inherit; touch-action: manipulation; cursor: pointer; }
 
-.tt-chat-lista { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-.tt-msg { flex: none; max-width: 90%; padding: 9px 12px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tt-msg.user { align-self: flex-end; background: var(--c-user); border-bottom-right-radius: 4px; }
-.tt-msg.coordenador { align-self: flex-start; background: var(--c-bg2); border: 1px solid var(--c-line);
-                      border-bottom-left-radius: 4px; }
-.tt-msg .quem { font-size: 11px; color: var(--c-muted); margin-bottom: 3px; display: flex; align-items: baseline; gap: 6px; }
-.tt-msg.user .quem { justify-content: flex-end; }
-.tt-msg .hora { font-size: 10px; color: var(--c-muted); font-variant-numeric: tabular-nums; }
+/* head: who you talk to, in one line; clearing is an icon */
+.tt-chat-topo { display: flex; align-items: center; gap: 10px; padding: 16px 16px 14px 20px; border-bottom: 1px solid var(--rule); }
+.tt-chat-topo h2 { flex: 1; min-width: 0; margin: 0; font: 600 17px/1.2 var(--f-ui); letter-spacing: -.015em; display: flex; flex-direction: column; gap: 3px; }
+.tt-chat-topo h2 small { font: 400 13px/1.3 var(--f-ui); color: var(--ink-3); letter-spacing: 0; }
+.tt-icon-btn { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: var(--r-2);
+               background: none; border: 0; color: var(--ink-3); transition: background-color .15s, color .15s; }
+.tt-icon-btn:hover:not(:disabled) { background: var(--sunk); color: var(--ink); }
+.tt-icon-btn .i { width: 17px; height: 17px; }
+.tt-icon-btn:disabled { opacity: .4; cursor: default; }
 
-/* messages that wait for an answer: a card with an eyebrow saying what it is */
-.tt-msg.cartao { max-width: 100%; align-self: stretch; padding: 0; overflow: hidden; border-radius: 12px; }
+/* transcript */
+.tt-chat-lista { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px 20px 12px;
+                 display: flex; flex-direction: column; gap: 18px; }
+.tt-msg { flex: none; white-space: pre-wrap; overflow-wrap: anywhere; animation: msg-in .3s var(--ease); }
+@keyframes msg-in { from { opacity: 0; transform: translateY(4px); } }
+.tt-msg .quem { display: flex; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 2px; }
+.tt-msg .hora { font: 400 12px/1 var(--f-num); color: var(--ink-3); }
+.tt-msg.coordenador { align-self: stretch; max-width: 100%; }
+.tt-msg.user { align-self: flex-end; max-width: 85%; padding: 10px 14px; border-radius: var(--r-3); border-bottom-right-radius: var(--r-1);
+               background: var(--sunk); color: var(--ink); }
+.tt-msg.user .quem { justify-content: flex-end; color: var(--ink-2); font-weight: 500; }
+
+/* what waits for you: one card style; the eyebrow says what it is */
+.tt-msg.cartao { align-self: stretch; max-width: 100%; padding: 0; overflow: hidden; background: var(--sheet);
+                 border: 1px solid var(--rule); border-radius: var(--r-3); box-shadow: var(--shadow-1); }
 .tt-msg.cartao .quem { display: none; }
-.tt-msg.cartao .tt-olho { display: flex; align-items: center; gap: 7px; padding: 7px 12px; font-size: 11px; font-weight: 600;
-                          text-transform: uppercase; letter-spacing: .07em; border-bottom: 1px solid var(--c-line); }
-.tt-msg.cartao .tt-olho .hora { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
-.tt-msg.cartao .texto { padding: 10px 12px 2px; }
-.tt-msg.cartao .tt-botoes { padding: 0 12px 12px; }
-.tt-msg.cartao .tt-porque { margin: 0 12px 12px; }
-.tt-msg.pendente { border-color: color-mix(in srgb, var(--c-warn) 55%, var(--c-line)); }
-.tt-msg.pendente .tt-olho { color: var(--c-warn); background: color-mix(in srgb, var(--c-warn) 10%, var(--c-bg2)); }
-.tt-msg.confirmar { border-color: var(--c-line2); }
-.tt-msg.confirmar .tt-olho { color: var(--c-text2); background: var(--c-bg3); }
-.tt-msg.sugestao .tt-olho { color: var(--c-text2); background: var(--c-bg3); }
-.tt-msg.regra { border-color: color-mix(in srgb, var(--c-warn) 70%, var(--c-line)); }
-.tt-msg.regra .tt-olho { color: var(--c-warn); background: color-mix(in srgb, var(--c-warn) 10%, var(--c-bg2)); }
-.tt-msg.respondido .tt-olho { color: var(--c-muted); background: var(--c-bg2); }
-.tt-msg.respondido { border-color: var(--c-line); }
+.tt-msg.cartao .tt-olho { display: flex; align-items: center; gap: 8px; padding: 12px 16px 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+.tt-msg.cartao .tt-olho::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--ink)); flex: none; }
+.tt-msg.cartao .tt-olho .hora { margin-left: auto; font-weight: 400; }
+.tt-msg.cartao .texto { padding: 6px 16px 4px; font-size: 16px; }
+.tt-msg.cartao .tt-botoes { padding: 6px 16px 16px; }
+.tt-msg.cartao .tt-porque { margin: 0 16px 16px; }
+.tt-msg.pendente { --c: var(--signal); border-color: color-mix(in srgb, var(--signal) 40%, var(--rule)); }
+.tt-msg.confirmar { --c: var(--ink); }
+.tt-msg.sugestao { --c: var(--a-conforto); }
+.tt-msg.regra { --c: var(--warn-dot); }
+/* answered: folds to a quiet line, no box, no dead buttons */
+.tt-msg.cartao.respondido { background: none; border: 0; border-left: 2px solid var(--rule-2); border-radius: 0; box-shadow: none; }
+.tt-msg.cartao.respondido .tt-olho { padding: 0 0 0 14px; color: var(--ink-3); font-weight: 500; }
+.tt-msg.cartao.respondido .tt-olho::before { display: none; }
+.tt-msg.cartao.respondido .texto { padding: 2px 0 0 14px; font-size: 15px; color: var(--ink-2); }
+.tt-msg.cartao.respondido .tt-botoes { padding: 4px 0 0 14px; }
+.tt-msg.cartao.respondido .tt-porque { margin: 8px 0 0 14px; }
 
-.tt-botoes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.tt-chat .tt-botoes button.primario { background: var(--c-text); color: var(--c-bg); border-color: var(--c-text); font-weight: 600; }
-.tt-chat .tt-botoes button.primario:hover:not(:disabled) { background: #fff; border-color: #fff; }
-.tt-chat .tt-botoes button.porque { background: transparent; border-color: transparent; color: var(--c-text2);
-                                    text-decoration: underline; text-underline-offset: 3px; margin-left: auto; }
-.tt-porque { margin-top: 10px; padding: 10px; background: var(--c-bg); border-radius: 8px; font-size: 12px;
-             color: var(--c-text2); border: 1px solid var(--c-line); white-space: normal; }
-.tt-porque ul { margin: 6px 0 0; padding-left: 18px; }
-.tt-porque svg { width: 100%; height: 120px; display: block; margin-top: 8px; overflow: visible; }
+/* actions in a card: the system's pair (ink primary, outline secondary), "Porquê?" as a text link */
+.tt-botoes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.tt-botoes:empty { display: none; }
+.tt-chat .tt-botoes button { min-height: 40px; padding: 0 16px; border-radius: var(--r-2); font-size: 14px; font-weight: 500;
+                             background: var(--sheet); color: var(--ink); border: 1px solid var(--rule-2);
+                             transition: transform .15s var(--ease), background-color .15s, border-color .15s; }
+.tt-chat .tt-botoes button:hover:not(:disabled) { background: #fff; border-color: var(--ink-3); transform: translateY(-1px); }
+.tt-chat .tt-botoes button:active:not(:disabled) { transform: scale(.98); }
+.tt-chat .tt-botoes button.primario { background: var(--ink); color: var(--paper); border-color: var(--ink); font-weight: 600; }
+.tt-chat .tt-botoes button.primario:hover:not(:disabled) { background: #000; border-color: #000; }
+.tt-chat .tt-botoes button.porque { margin-left: auto; min-height: 32px; padding: 0 2px; background: none; border: 0; color: var(--ink-2);
+                                    text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rule-2); }
+.tt-chat .tt-botoes button.porque:hover { color: var(--ink); text-decoration-color: currentColor; transform: none; background: none; }
+.tt-porque { margin-top: 10px; padding: 12px 14px; background: var(--paper); border-radius: var(--r-2); font-size: 14px; color: var(--ink-2); white-space: normal; }
+.tt-porque ul { margin: 8px 0 0; padding-left: 18px; }
+.tt-porque li + li { margin-top: 4px; }
+.tt-porque svg { width: 100%; height: 120px; display: block; margin-top: 10px; overflow: visible; }
+.tt-imagem { display: block; width: 100%; margin-top: 8px; border-radius: var(--r-2); background: #111; }
 
-.tt-chat-sugestoes { display: flex; gap: 6px; padding: 8px 14px; overflow-x: auto; scrollbar-width: thin;
-                     border-top: 1px solid var(--c-line); }
-.tt-chat .tt-chat-sugestoes button { flex: none; font-size: 12px; font-weight: 400; color: var(--c-text2);
-                                     background: transparent; border-color: var(--c-line); border-radius: 99px; }
-.tt-chat-form { display: flex; gap: 8px; padding: 10px 14px 14px; }
-.tt-chat-form input { flex: 1; min-width: 0; font: inherit; color: var(--c-text); background: var(--c-bg2);
-                      border: 1px solid var(--c-line2); border-radius: 10px; padding: 10px 12px; }
-.tt-chat-form input::placeholder { color: var(--c-muted); }
-.tt-chat-form input:focus { outline: 2px solid var(--c-text2); outline-offset: -1px; }
-.tt-chat .tt-chat-form button { background: var(--c-text); color: var(--c-bg); border-color: var(--c-text); font-weight: 600;
-                                font-size: 13px; padding: 0 16px; border-radius: 10px; }
-.tt-escrever { align-self: flex-start; color: var(--c-muted); font-size: 12px; display: flex; align-items: center; gap: 4px; }
-.tt-escrever::after { content: "•••"; letter-spacing: 2px; animation: tt-piscar 1s steps(3, end) infinite; }
-@keyframes tt-piscar { 0% { clip-path: inset(0 66% 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+.tt-escrever { align-self: flex-start; color: var(--ink-3); font-size: 14px; display: flex; align-items: center; gap: 4px; }
+.tt-escrever::after { content: "•••"; letter-spacing: 2px; animation: tt-dots 1s steps(3, end) infinite; }
+@keyframes tt-dots { 0% { clip-path: inset(0 66% 0 0); } 100% { clip-path: inset(0 0 0 0); } }
 
-/* modal: "O que a casa sabe de ti" */
-.tt-modal-fundo { position: fixed; inset: 0; background: rgba(5, 8, 12, .7); display: flex; align-items: center;
-                  justify-content: center; z-index: 50; padding: 16px; }
-.tt-modal { background: var(--panel, #121821); color: var(--text, #e6ebf3); border: 1px solid var(--line-strong, #34425a);
-            border-radius: 14px; width: min(860px, 100%); max-height: 90vh; display: flex; flex-direction: column;
-            font: 14px/1.45 var(--font-ui, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
-            box-shadow: 0 20px 60px rgba(0, 0, 0, .55); }
-.tt-modal header { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--line, #243040); }
-.tt-modal header h2 { margin: 0; font: 600 17px/1.2 var(--font-display, inherit); flex: 1; }
-.tt-modal .corpo { overflow: auto; padding: 8px 18px 18px; }
-.tt-modal h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted, #8591a6); margin: 18px 0 8px;
-               font-family: var(--font-ui, inherit); }
-.tt-modal .item { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border: 1px solid var(--line, #243040);
-                  border-radius: 10px; margin-bottom: 6px; background: var(--panel-2, #19212c); }
-.tt-modal .item > div { flex: 1; min-width: 0; }
-.tt-modal .item .meta { font-size: 11px; color: var(--muted, #8591a6); }
-.tt-modal .item .frase { font-size: 12px; color: var(--muted, #8591a6); font-style: italic; }
-.tt-modal .item.inativo { opacity: .55; }
-.tt-modal .vazio { color: var(--muted, #8591a6); font-size: 13px; }
-.tt-modal button { font: inherit; font-size: 12px; font-weight: 500; color: var(--text, #e6ebf3); background: var(--panel-2, #19212c);
-                   border: 1px solid var(--line-strong, #34425a); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
-.tt-modal button.perigo { border-color: var(--bad, #d03b3b); color: var(--bad-text, #ff8a85); }
-.tt-modal .rgpd { font-size: 12px; color: var(--muted, #8591a6); }
-.tt-modal button.primario { background: var(--text, #e6ebf3); color: var(--bg, #0b0f15); border-color: var(--text, #e6ebf3); }
+/* starters (wrap, three at most) and the composer: one field, the send button inside it */
+.tt-chat-sugestoes { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 20px 0; border-top: 1px solid var(--rule); }
+.tt-chat .tt-chat-sugestoes button { min-height: 34px; padding: 0 12px; border-radius: 999px; font-size: 13px; color: var(--ink-2);
+                                      background: none; border: 1px solid var(--rule-2); transition: background-color .15s, color .15s, border-color .15s; }
+.tt-chat .tt-chat-sugestoes button:hover { color: var(--ink); background: var(--sheet); border-color: var(--ink-3); }
+.tt-chat-form { position: relative; display: flex; padding: 10px 20px 18px; }
+.tt-chat-form input { flex: 1; min-width: 0; min-height: 52px; padding: 0 60px 0 16px; font: 15px/1.4 var(--f-ui); color: var(--ink);
+                      background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r-3);
+                      transition: border-color .15s, box-shadow .15s; }
+.tt-chat-form input::placeholder { color: var(--ink-3); }
+.tt-chat-form input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px rgb(24 24 27 / .08); }
+.tt-send { position: absolute; right: 25px; top: 15px; width: 42px; height: 42px; display: grid; place-items: center;
+           border-radius: var(--r-2); background: var(--ink); color: var(--paper); border: 0;
+           transition: transform .15s var(--ease), background-color .15s; }
+.tt-send:hover:not(:disabled) { background: #000; transform: translateY(-1px); }
+.tt-send:active:not(:disabled) { transform: scale(.96); }
+.tt-send:disabled { opacity: .4; cursor: default; }
+.tt-send .i { width: 18px; height: 18px; }
+.tt-send-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ------------------------------------------------------------------ modal: O que a casa sabe de ti */
+.tt-modal-fundo { position: fixed; inset: 0; z-index: 50; padding: 24px; display: flex; align-items: center; justify-content: center;
+                  background: rgb(24 24 27 / .35); backdrop-filter: blur(3px); animation: fade .2s var(--ease); }
+@keyframes fade { from { opacity: 0; } }
+.tt-modal { width: min(880px, 100%); max-height: 90vh; display: flex; flex-direction: column; background: var(--sheet); color: var(--ink);
+            border-radius: var(--r-3); box-shadow: var(--shadow-2); font: 15px/1.5 var(--f-ui); animation: modal-in .3s var(--ease); }
+@keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(.99); } }
+.tt-modal header { display: flex; align-items: center; gap: 8px; padding: 20px 24px 16px; border-bottom: 1px solid var(--rule); }
+.tt-modal header h2 { margin: 0; font-size: 22px; letter-spacing: -.02em; flex: 1; }
+.tt-modal .corpo { overflow: auto; padding: 4px 24px 24px; }
+.tt-modal h3 { font-size: 15px; font-weight: 600; margin: 26px 0 10px; color: var(--ink); }
+.tt-modal button { font: 500 13px/1 var(--f-ui); color: var(--ink); background: var(--sheet); border: 1px solid var(--rule-2);
+                   border-radius: var(--r-2); min-height: 34px; padding: 0 12px; cursor: pointer; transition: background .15s, transform .15s; }
+.tt-modal button:hover:not(:disabled) { background: #fff; transform: translateY(-1px); }
 .tt-modal button:disabled { opacity: .45; cursor: default; }
-.tt-modal .meta { font-size: 11px; color: var(--muted, #8591a6); }
-.tt-modal .frase { font-size: 12px; color: var(--muted, #8591a6); font-style: italic; }
-/* summary on top: target temperature per room, autonomy per area */
-.tt-modal .kn-grelha { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
-.tt-modal .kn-tile, .tt-modal .kn-cartao { padding: 12px; border: 1px solid var(--line, #243040); border-radius: 10px;
-                                           background: var(--panel-2, #19212c); }
-.tt-modal .kn-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
-.tt-modal .kn-tile > button { margin-top: 6px; }
-.tt-modal .kn-rotulo { font-size: 12px; font-weight: 600; color: var(--text-2, #b6c0cf); }
-.tt-modal .kn-valor { font: 600 18px/1.2 var(--font-display, inherit); font-variant-numeric: tabular-nums; }
-.tt-modal .kn-cartao { display: flex; flex-direction: column; gap: 10px; }
-.tt-modal .kn-autonomia { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
-.tt-modal .kn-autonomia .kn-rotulo { min-width: 90px; }
-.tt-modal .kn-niveis { display: flex; flex-wrap: wrap; gap: 4px; }
-.tt-modal .kn-niveis button { padding: 3px 9px; border-radius: 99px; background: transparent; border-color: var(--line, #243040);
-                              color: var(--text-2, #b6c0cf); }
-.tt-modal .kn-niveis button[aria-pressed="true"] { background: var(--panel-3, #212a37); border-color: var(--line-strong, #34425a);
-                                                   color: var(--text, #e6ebf3); }
-.tt-modal .kn-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; width: 100%; }
-.tt-modal .kn-form input { flex: 1; min-width: 80px; font: inherit; font-size: 13px; color: var(--text, #e6ebf3);
-                           background: var(--bg, #0b0f15); border: 1px solid var(--line-strong, #34425a); border-radius: 6px; padding: 5px 8px; }
-.tt-modal .kn-erro { flex-basis: 100%; font-size: 12px; color: var(--bad-text, #ff8a85); }
+.tt-modal button.perigo { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--rule-2)); }
+.tt-modal button.perigo:hover:not(:disabled) { background: var(--bad-bg); }
+.tt-modal button.primario { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.tt-modal .item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.tt-modal .item > div { flex: 1; min-width: 0; }
+.tt-modal .item.inativo { opacity: .55; }
+.tt-modal .meta { font-size: 13px; color: var(--ink-3); margin-top: 2px; }
+.tt-modal .frase { font-size: 14px; color: var(--ink-2); margin-top: 4px; }
+.tt-modal .vazio { color: var(--ink-3); font-size: 14px; }
+.tt-modal .rgpd { font-size: 13px; color: var(--ink-3); margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.tt-modal .kn-grelha { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.tt-modal .kn-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 16px; border-radius: var(--r-2);
+                     background: var(--paper); }
+.tt-modal .kn-tile > button { margin-top: 8px; }
+.tt-modal .kn-rotulo { font-size: 14px; font-weight: 600; color: var(--ink-2); }
+.tt-modal .kn-valor { font: 500 30px/1.1 var(--f-num); letter-spacing: -.04em; }
+.tt-modal .kn-cartao { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
+.tt-modal .kn-autonomia { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.tt-modal .kn-autonomia .kn-rotulo { min-width: 110px; }
+.tt-modal .kn-niveis { display: inline-flex; padding: 3px; gap: 2px; border-radius: var(--r-2); background: var(--paper); }
+.tt-modal .kn-niveis button { border: 0; background: none; color: var(--ink-3); min-height: 30px; }
+.tt-modal .kn-niveis button:hover:not(:disabled) { transform: none; color: var(--ink); background: var(--sunk); }
+.tt-modal .kn-niveis button[aria-pressed="true"] { background: var(--sheet); color: var(--ink); box-shadow: var(--shadow-1); }
+.tt-modal .kn-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; width: 100%; }
+.tt-modal .kn-form input { flex: 1; min-width: 80px; min-height: 34px; font: 14px var(--f-ui); color: var(--ink); background: #fff;
+                           border: 1px solid var(--rule-2); border-radius: var(--r-2); padding: 0 10px; }
+.tt-modal .kn-erro { flex-basis: 100%; font-size: 13px; color: var(--bad); }
 .tt-modal .kn-erro:empty { display: none; }
-.tt-modal .kn-historico { margin-top: 18px; }
-.tt-modal .kn-historico summary { cursor: pointer; font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-                                  color: var(--muted, #8591a6); margin-bottom: 8px; }
-
-.tt-imagem { display: block; width: 100%; margin-top: 8px; border-radius: 8px; background: #000; }
+.tt-modal .kn-historico { margin-top: 26px; }
+.tt-modal .kn-historico summary { cursor: pointer; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+@media (max-width: 640px) { .tt-modal-fundo { padding: 0; align-items: flex-end; } .tt-modal { max-height: 94vh; border-radius: var(--r-3) var(--r-3) 0 0; } }

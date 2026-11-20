@@ -1,0 +1,184 @@
+/* O que a casa sabe de ti: the overview's system (hero, blocks, ledger) plus what this page needs.
+   Hairlines and type; the only boxes are the forms you type into. */
+
+/* hero, mirrored: the words on the photograph's calm right side; the frame anchored right moves the
+   thermostat left of them */
+.hero--right .hero-frame { left: auto; right: 0; }
+.hero--right .hero-frame img { transform-origin: 41% 30%; }
+.hero--right .hero-media::after {
+  background:
+    linear-gradient(270deg, rgb(17 16 14 / .82) 0%, rgb(17 16 14 / .62) 32%, rgb(17 16 14 / .14) 58%, rgb(17 16 14 / 0) 72%),
+    linear-gradient(0deg, rgb(17 16 14 / .42) 0%, rgb(17 16 14 / 0) 40%); }
+.hero--right .hero-copy { margin-left: auto; max-width: 540px; }
+.hero--right #kn-h1 { font-size: clamp(44px, 5vw, 72px); line-height: .98; letter-spacing: -.045em; font-weight: 600; max-width: 10ch;
+                      text-shadow: 0 1px 24px rgb(0 0 0 / .25); }
+@media (max-width: 1024px) {
+  .hero--right .hero-media::after { background:
+    linear-gradient(270deg, rgb(17 16 14 / .86) 0%, rgb(17 16 14 / .7) 45%, rgb(17 16 14 / .2) 75%, rgb(17 16 14 / 0) 90%),
+    linear-gradient(0deg, rgb(17 16 14 / .5) 0%, rgb(17 16 14 / 0) 45%); }
+}
+@media (orientation: portrait), (max-width: 760px) {
+  .hero--right .hero-frame { left: 50%; right: auto; translate: -41.5% -50%; }
+  .hero--right .hero-media::after { background: linear-gradient(0deg, rgb(17 16 14 / .94) 0%, rgb(17 16 14 / .8) 48%, rgb(17 16 14 / .15) 66%, rgb(17 16 14 / 0) 78%); }
+  .hero--right .hero-copy { margin-left: 0; max-width: none; }
+  .hero--right #kn-h1 { font-size: clamp(36px, 10.5vw, 48px); max-width: 12ch; }
+}
+
+/* blocks on this page: two screens' worth of settings, read top to bottom */
+.kn .block { scroll-margin-top: calc(var(--shell-h) + 16px); }
+.kn .block-head h2 { font-size: 26px; letter-spacing: -.025em; }
+.kn .block-head .muted { max-width: 46ch; text-align: right; }
+
+/* temperatures: per room, the name and the temperature now | an instrument rule 14-26 °C with the
+   target you drag and a mark for now | the target, big. Hairlines between rooms, nothing boxed. */
+.kn-temps-note { margin: -4px 0 16px; font-size: 15px; color: var(--ink-2); max-width: 70ch; }
+.kn-rooms { border-top: 1px solid var(--ink); }
+.kn-room { display: grid; grid-template-columns: 240px minmax(0, 1fr) 170px; gap: 12px 48px; align-items: center;
+           padding: 26px 0 22px; border-bottom: 1px solid var(--rule); }
+.kn-room-head { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.kn-room-name { font-size: 24px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; cursor: pointer; }
+.kn-now { font-size: 14px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.kn-mine { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.kn-mine::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ink); }
+.kn-mine[hidden] { display: none; }
+
+.kn-rule { position: relative; height: 56px; }
+.kn-ticks { position: absolute; left: 0; right: 0; top: 22px; height: 2px; background: var(--rule-2); border-radius: 2px; }
+.kn-tick { position: absolute; top: -4px; width: 1px; height: 10px; background: var(--rule-2); }
+.kn-tick.major { top: -6px; height: 14px; background: var(--ink-3); }
+.kn-tick-l { position: absolute; top: 20px; left: 0; transform: translateX(-50%); font: 12px/1 var(--f-num); color: var(--ink-3); white-space: nowrap; }
+.kn-gap { position: absolute; top: 20px; height: 6px; border-radius: 3px; background: transparent; pointer-events: none;
+          transition: left .15s var(--ease), width .15s var(--ease), background-color .2s; }
+.kn-gap.heat { background: color-mix(in srgb, var(--signal) 55%, transparent); }
+.kn-gap.cool { background: color-mix(in srgb, var(--a-conforto) 45%, transparent); }
+.kn-nowmark { position: absolute; top: 10px; width: 2px; height: 26px; margin-left: -1px; background: var(--ink-2); border-radius: 1px; pointer-events: none; }
+.kn-nowmark::after { content: "agora"; position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+                     font: 500 11px/1 var(--f-ui); color: var(--ink-3); white-space: nowrap; }
+.kn-nowmark[hidden] { display: none; }
+
+/* the native range, restyled: transparent track, an ink dot for the thumb (the whole rule is the hit area) */
+.kn-range { position: absolute; left: -12px; right: -12px; top: 0; width: calc(100% + 24px); height: 46px; margin: 0;
+            background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; touch-action: pan-y; }
+.kn-range:focus { outline: none; }
+.kn-range::-webkit-slider-runnable-track { height: 46px; background: transparent; }
+.kn-range::-moz-range-track { height: 46px; background: transparent; }
+.kn-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 24px; height: 24px; margin-top: 11px; border-radius: 50%;
+  background: var(--ink); border: 0; box-shadow: 0 0 0 4px var(--paper), 0 2px 8px rgb(24 24 27 / .25); cursor: grab;
+  transition: transform .15s var(--ease); }
+.kn-range::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: var(--ink); border: 0;
+  box-shadow: 0 0 0 4px var(--paper), 0 2px 8px rgb(24 24 27 / .25); cursor: grab; }
+.kn-range:hover::-webkit-slider-thumb { transform: scale(1.1); }
+.kn-range:active::-webkit-slider-thumb { cursor: grabbing; transform: scale(1.15); }
+.kn-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--paper), 0 0 0 6px var(--signal); }
+.kn-range:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px var(--paper), 0 0 0 6px var(--signal); }
+
+.kn-room-target { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.kn-target-wrap { display: inline-flex; align-items: baseline; gap: 4px; }
+.kn-target { font: 600 44px/1 var(--f-ui); letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
+.kn-target-u { font-size: 16px; font-weight: 500; color: var(--ink-3); }
+.kn-step-status { display: inline-block; font-size: 13px; color: var(--ink-3); min-height: 1em; }
+.kn-step-status.ok { color: var(--ok); }
+.kn-step-status.ok::before { content: "✓ "; }
+.kn-step-status.bad { color: var(--bad); }
+
+/* autonomy: per area, the name and what the choice means in words; on the right a three-stop scale
+   (Nunca · Pergunta-me · Faz sozinha) on one line, the chosen stop filled, like the comfort rule on / */
+.kn-aut { border-top: 1px solid var(--ink); }
+.kn-aut-row { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px 56px; align-items: center;
+              padding: 24px 0; border-bottom: 1px solid var(--rule); }
+.kn-aut-text h3 { display: flex; align-items: baseline; gap: 4px; font-size: 22px; letter-spacing: -.02em; }
+.kn-aut-text h3 .kn-step-status { font-size: 13px; letter-spacing: 0; font-weight: 500; }
+.kn-conseq { margin-top: 6px; font-size: 16px; line-height: 1.5; color: var(--ink-2); max-width: 58ch; min-height: 3em; }
+.kn-aut-row[data-level="auto"] .kn-conseq { color: var(--ink); }
+
+.kn-scale { border: 0; margin: 0; padding: 0; min-width: 0; }
+.kn-scale-track { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); }
+.kn-scale-track::before { content: ""; position: absolute; left: 16.66%; right: 16.66%; top: 21px; height: 2px; background: var(--rule-2); }
+.kn-scale input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.kn-stop { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; min-height: 64px; padding-top: 12px;
+           cursor: pointer; border-radius: var(--r-2); touch-action: manipulation; }
+.kn-stop-dot { width: 20px; height: 20px; border-radius: 50%; background: var(--paper); box-shadow: inset 0 0 0 2px var(--rule-2);
+               transition: box-shadow .2s var(--ease), transform .2s var(--ease), background-color .2s var(--ease); }
+.kn-stop-label { font-size: 14px; font-weight: 500; color: var(--ink-3); white-space: nowrap; transition: color .15s; }
+.kn-stop:hover .kn-stop-dot { box-shadow: inset 0 0 0 2px var(--ink-3); transform: scale(1.08); }
+.kn-stop:hover .kn-stop-label { color: var(--ink); }
+.kn-scale input:checked + .kn-stop .kn-stop-dot { background: var(--ink); box-shadow: inset 0 0 0 2px var(--ink), 0 0 0 5px var(--paper), 0 0 0 6px var(--rule-2); }
+.kn-scale input:checked + .kn-stop .kn-stop-label { color: var(--ink); font-weight: 600; }
+/* "faz sozinha" is the one choice that lets the house act: it takes the signal colour */
+.kn-scale input[value="auto"]:checked + .kn-stop .kn-stop-dot { background: var(--signal); box-shadow: inset 0 0 0 2px var(--signal), 0 0 0 5px var(--paper), 0 0 0 6px color-mix(in srgb, var(--signal) 40%, var(--paper)); }
+.kn-scale input:focus-visible + .kn-stop { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+/* preferences and rules: two lists side by side, each item a sentence with its quote */
+.kn-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
+.kn-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--ink); }
+.kn-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 20px; padding: 18px 0; border-bottom: 1px solid var(--rule); }
+.kn-item.is-off { opacity: .55; }
+.kn-item-what { font-size: 17px; font-weight: 500; }
+.kn-item-meta { margin-top: 6px; font-size: 13px; color: var(--ink-3); }
+.kn-item-acts { display: flex; gap: 4px; align-items: flex-start; }
+.kn-text-btn { min-height: 36px; padding: 0 8px; border: 0; background: none; cursor: pointer; border-radius: var(--r-1);
+               font: 500 14px/1 var(--f-ui); color: var(--ink-2); text-decoration: underline; text-underline-offset: 3px;
+               text-decoration-color: var(--rule-2); transition: color .15s, text-decoration-color .15s; }
+.kn-text-btn:hover { color: var(--ink); text-decoration-color: currentColor; }
+.kn-text-btn.danger { color: var(--bad); }
+.kn-text-btn[data-armed] { text-decoration: none; background: var(--bad-bg); }
+.kn-empty { padding: 20px 0; font-size: 15px; color: var(--ink-2); border-bottom: 1px solid var(--rule); max-width: 52ch; }
+.kn-sub { margin-top: 40px; }
+.kn-sub h3 { font-size: 18px; }
+
+/* inline form (Mudar, Editar) */
+.kn-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.kn-form input { width: 120px; min-height: 38px; padding: 0 10px; font: 15px var(--f-ui); color: var(--ink); background: #fff;
+                 border: 1px solid var(--rule-2); border-radius: var(--r-2); }
+.kn-item .kn-form input { flex: 1; min-width: 160px; width: auto; }
+.kn-form input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px rgb(24 24 27 / .08); }
+.kn-form-err { flex-basis: 100%; margin: 0; font-size: 13px; color: var(--bad); }
+.kn-form-err:empty { display: none; }
+
+/* history */
+.kn-hist summary { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none;
+                   padding-bottom: 18px; }
+.kn-hist summary::-webkit-details-marker { display: none; }
+.kn-hist summary h2 { font-size: 26px; letter-spacing: -.025em; display: inline-flex; align-items: center; gap: 12px; }
+.kn-hist summary h2::after { content: ""; width: 9px; height: 9px; border-right: 2px solid var(--ink-3); border-bottom: 2px solid var(--ink-3);
+                             transform: rotate(45deg) translateY(-3px); transition: transform .2s var(--ease); }
+.kn-hist[open] summary h2::after { transform: rotate(225deg) translateY(-1px); }
+.kn-note { margin-top: 18px; font-size: 14px; color: var(--ink-3); max-width: 70ch; }
+
+/* erase: the last thing on the page, said plainly, confirmed by typing */
+.kn-danger .block-head { border-bottom: 0; }
+.kn-danger-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px 56px; padding-top: 22px;
+                  border-top: 2px solid var(--bad); }
+.kn-danger-grid p { font-size: 16px; color: var(--ink-2); max-width: 52ch; }
+.kn-danger-grid p + p { margin-top: 8px; }
+.kn-erase label { display: block; font-size: 15px; color: var(--ink); margin-bottom: 8px; }
+.kn-erase-row { display: flex; gap: 8px; }
+.kn-erase input { flex: 1; min-width: 0; min-height: 48px; padding: 0 14px; font: 500 16px var(--f-num); letter-spacing: .04em;
+                  color: var(--ink); background: #fff; border: 1px solid var(--rule-2); border-radius: var(--r-2); }
+.kn-erase input:focus { outline: none; border-color: var(--bad); box-shadow: 0 0 0 3px rgb(191 51 40 / .12); }
+.kn-erase-btn { min-height: 48px; background: var(--bad); color: #fff; border-color: var(--bad); font-weight: 600; }
+.kn-erase-btn:hover:not(:disabled) { background: #a32a20; border-color: #a32a20; }
+.kn-erase-msg { margin-top: 10px; font-size: 14px; color: var(--ink-2); }
+.kn-erase-msg:empty { display: none; }
+
+@media (max-width: 1024px) {
+  .kn-room { grid-template-columns: 200px minmax(0, 1fr) 140px; gap: 12px 32px; }
+  .kn-target { font-size: 38px; }
+  .kn-aut-row { grid-template-columns: minmax(0, 1fr) 320px; gap: 16px 32px; }
+  .kn-two { grid-template-columns: 1fr; }
+  .kn-two > div + div { margin-top: 48px; }
+}
+
+@media (max-width: 760px) {
+  .kn .block-head .muted { text-align: left; }
+  .kn-aut-row { grid-template-columns: 1fr; }
+  .kn-conseq { min-height: 0; }
+  .kn-room { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "head target" "rule rule"; gap: 18px 16px; }
+  .kn-room-head { grid-area: head; } .kn-room-target { grid-area: target; } .kn-rule { grid-area: rule; margin: 0 12px; }
+  .kn-danger-grid { grid-template-columns: 1fr; }
+  .kn-erase-row { flex-direction: column; }
+  .kn-item { grid-template-columns: 1fr; }
+}
+
+/* the frame at the screen's width (the thermostat stays in view, never cropped by the zoom) */
+.hero--right .hero-frame { width: max(100cqw, 149.88cqh); }
